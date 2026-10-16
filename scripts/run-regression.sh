@@ -55,10 +55,11 @@ if [ "$BATCH" = "all" ] || [ "$BATCH" = "B" ]; then
     item "Wayland 截图门户" 120 "bash scripts/test-wayland-capture.sh | grep -q '^PASS'"
 fi
 
-if [ "$BATCH" = "all" ]; then
+if [ "$BATCH" = "all" ] || [ "$BATCH" = "C" ]; then
     echo "===== C 批：打包 ====="
     item "deb 打包" 120 "bash scripts/build-deb.sh build-linux dist | grep -q '完成'"
     item "AppImage 打包" 120 "bash scripts/build-appimage.sh build-linux dist | grep -q '完成'"
+    item "rpm 打包" 120 "bash scripts/build-rpm.sh build-linux dist | grep -q '完成'"
 fi
 
 echo

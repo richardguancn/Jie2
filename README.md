@@ -312,6 +312,14 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
   - 验证：`scripts/test-wayland-portal.sh` 用 `scripts/mock-portal.py`
     （按规范实现的门户 mock）做端到端测试——绑定成功 / Activated 触发回调 /
     拒绝场景如实失败，**25 轮连续稳定通过**
+- **打包三格式（deb / rpm / 自解压 AppImage）**——
+  `scripts/build-deb.sh`、`scripts/build-rpm.sh`、`scripts/build-appimage.sh`。
+  AppImage 是**简化自解压格式**（POSIX shell 头 + tar.gz 尾）：零外部工具、
+  零 FUSE 依赖（标准 type-2 AppImage 需要 libfuse2，老国产系统常缺）；
+  代价是不能挂载，换来"拷过去 chmod +x 就能跑"。脚本含自检
+  （标记行 / 可执行 / 体积）并验证过实际运行（`--version` 输出正确）。
+  2026-10-16 该脚本曾被意外截断为 0 字节（详见"已修缺陷"末尾），
+  此后建立了 git 仓库做版本保护（提交 2025ba4 起）。
 - **M7 前置：Wayland 截图（portal Screenshot，完成）**——
   `src/platform/linux/wayland_screenshot.cpp`：一次性请求-响应流程
   （调用 → 等 Response → 读回门 Pro 产出的 PNG 文件 → 解码）。
@@ -442,6 +450,19 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 16. **头文件检查项拖垮回归**（`check-headers.sh`）：6 个 Qt 头串行
     `-fsyntax-only` 要 100+ 秒，回归里 90 秒超时把它变成假失败。
     修复：改并行执行（-P 4），回归项超时给足 300 秒。
+17. **`build-appimage.sh` 被意外截断为 0 字节**：某次会话操作中脚本损坏
+    （具体原因未确定），而此前项目**没有版本控制**，恢复只能靠逆向旧产物
+    （自解压格式 = shell 头 + tar.gz 尾，从包头读出确切结构，结合现存的
+    AppDir 素材重建脚本）。恢复后加了自检（标记行 / 可执行 / 体积）与
+    实际运行验证。**教训：该目录已有长期价值，必须进 git** ——
+    随后完成仓库初始化（提交 2025ba4），此后任何文件损坏可 diff / 回滚。
+18. **mock 门户的两个 dbus-python 坑**（`mock-portal.py`，供后人省时间）：
+    ① `dbus.service.BusName(...)` 的返回值若不接住会立即被 GC →
+    名字释放 → 客户端报 "The name ... was not provided by any .service
+    files"（mock 看着"启动成功"却没人持有名字）；
+    ② 取调用方唯一名要用方法装饰器的 `sender_keyword` 参数 ——
+    `dbus.get_current_message()` 这个 API 在 dbus-python 里不存在
+    （AttributeError）。
 
 ### 已知待办：截图色彩管理（如实记录）
 
