@@ -143,6 +143,10 @@ private:
     /// 在指定位置放置一个序号标注（自动取下一个编号）。
     void placeNumberMarker(const QPoint& logicalPos);
 
+    /// 自由选中（专业版对齐项 v2.8）：Ctrl+点击命中已有标注则选中它；
+    /// 未命中则取消选中。选中后可 Delete 删除、方向键微移。
+    void handleSelectClick(const QPoint& logicalPos);
+
     QLineEdit* textInput_ = nullptr;
     QPoint textAnchorImage_;  // 文字输入的源图像素锚点
 
@@ -206,6 +210,7 @@ private:
     int paletteSize_ = 6;           // 调色板颜色数量（专业版对齐项，可配置）
     bool drawing_ = false;          // 正在绘制一条标注
     bool erasing_ = false;          // 橡皮擦拖拽中
+    int selectedIndex_ = -1;        // 自由选中（v2.8）：当前选中的标注索引（-1=无）
     core::Annotation draft_;        // 绘制中的草稿
     QImage composedBase_;           // 底图 + 已烘焙的像素效果（预览用）
     QPixmap displayPixmap_;         // composedBase_ 的 QPixmap 缓存

@@ -426,6 +426,34 @@ void SelectionOverlay::paintAnnotations(QPainter& painter,
             paintAnnotation(painter, draft_);
         }
     }
+
+    // 自由选中（专业版 v2.8）：给选中的标注描虚线包围盒 + 四角标记。
+    // 坐标即源图像素（与上方标注同一变换）。
+    if (selectedIndex_ >= 0 &&
+        static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
+        const core::Rect bounds = annotations_
+                                      .items()[static_cast<std::size_t>(
+                                          selectedIndex_)]
+                                      .boundingRect();
+        painter.setBrush(Qt::NoBrush);
+        QPen pen(QColor(64, 158, 255), 0);  // cosmetic：屏显恒定 1px
+        pen.setStyle(Qt::DashLine);
+        painter.setPen(pen);
+        const QRectF box(bounds.x - 4.0, bounds.y - 4.0,
+                         bounds.width + 8.0, bounds.height + 8.0);
+        painter.drawRect(box);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(64, 158, 255));
+        constexpr double kMark = 6.0;
+        const QPointF corners[] = {box.topLeft(), box.topRight(),
+                                   box.bottomLeft(), box.bottomRight()};
+        for (const QPointF& corner : corners) {
+            painter.drawRect(
+                QRectF(corner.x() - kMark / 2.0, corner.y() - kMark / 2.0,
+                       kMark, kMark));
+        }
+    }
     painter.restore();
 }
 
@@ -434,6 +462,7 @@ void SelectionOverlay::performUndo() {
         showToast(QStringLiteral("没有可撤销的标注"));
         return;
     }
+    selectedIndex_ = -1;  // 条目集合变了，选中失效
     rebuildComposed();
     update();
     showToast(QStringLiteral("已撤销"));
@@ -446,11 +475,49 @@ void SelectionOverlay::performRedo() {
         showToast(QStringLiteral("没有可重做的标注"));
         return;
     }
+    selectedIndex_ = -1;  // 条目集合变了，选中失效
     rebuildComposed();
     update();
     showToast(QStringLiteral("已重做"));
     qInfo().noquote() << QStringLiteral("[jie2] 重做（共 %1 条）")
                              .arg(annotations_.size());
+}
+
+void SelectionOverlay::handleSelectClick(const QPoint& logicalPos) {
+    const QPoint img = imagePos(logicalPos);
+    const auto& items = annotations_.items();
+
+    // 从最上层（最后画的）往下找命中。包围盒加 4px 宽容：
+    // 细线类标注（箭头/铅笔）的包围盒只有线宽那么宽，精确命中太难。
+    int hit = -1;
+    constexpr int kHitPad = 4;
+    for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i) {
+        const core::Rect bounds =
+            items[static_cast<std::size_t>(i)].boundingRect();
+        if (img.x() >= bounds.x - kHitPad &&
+            img.x() <= bounds.x + bounds.width + kHitPad &&
+            img.y() >= bounds.y - kHitPad &&
+            img.y() <= bounds.y + bounds.height + kHitPad) {
+            hit = i;
+            break;
+        }
+    }
+
+    selectedIndex_ = hit;
+    if (hit >= 0) {
+        const QString tool = QString::fromUtf8(
+            toolDisplayName(items[static_cast<std::size_t>(hit)].tool));
+        qInfo().noquote()
+            << QStringLiteral("[jie2] 自由选中：标注 %1/%2（%3）")
+                   .arg(hit + 1)
+                   .arg(items.size())
+                   .arg(tool);
+        showToast(QStringLiteral("已选中「%1」 · Delete 删除 · 方向键微移").arg(tool));
+    } else if (!items.empty()) {
+        qInfo().noquote() << QStringLiteral("[jie2] 自由选中：未命中（点击处无标注）");
+        showToast(QStringLiteral("点击处没有标注"));
+    }
+    update();
 }
 
 // ---- 文字与序号（M2 增补）----
@@ -1026,6 +1093,12 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
     // 这是与 Snipaste 一致的心智模型：选完区域后直接在区域内画。
     if (hasSelection_ && !selectionRect_.isEmpty() &&
         selectionRect_.contains(event->pos())) {
+        // Ctrl+左键 = 自由选中（专业版 v2.8）：命中已有标注则选中，
+        // 未命中则取消选中。选中后可 Delete 删除、方向键微移。
+        if (event->modifiers().testFlag(Qt::ControlModifier)) {
+            handleSelectClick(event->pos());
+            return;
+        }
         // 文字与序号是"点状"工具：一次点击完成，不走拖拽路径。
         if (currentTool_ == core::AnnotationTool::Text) {
             startTextInput(event->pos());
@@ -1254,6 +1327,47 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
     if (event->matches(QKeySequence::Redo)) {
         performRedo();
         return;
+    }
+    // 自由选中（专业版 v2.8）：Delete 删除选中标注；方向键微移（Shift = 10px）。
+    if (selectedIndex_ >= 0 &&
+        static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
+        if (event->key() == Qt::Key_Delete ||
+            event->key() == Qt::Key_Backspace) {
+            annotations_.removeAt(static_cast<std::size_t>(selectedIndex_));
+            selectedIndex_ = -1;
+            rebuildComposed();
+            update();
+            qInfo().noquote()
+                << QStringLiteral("[jie2] 删除选中标注（剩 %1 条）")
+                       .arg(annotations_.size());
+            showToast(QStringLiteral("已删除选中标注"));
+            return;
+        }
+        int dx = 0;
+        int dy = 0;
+        switch (event->key()) {
+            case Qt::Key_Left: dx = -1; break;
+            case Qt::Key_Right: dx = 1; break;
+            case Qt::Key_Up: dy = -1; break;
+            case Qt::Key_Down: dy = 1; break;
+            default: break;
+        }
+        if (dx != 0 || dy != 0) {
+            const int step =
+                event->modifiers().testFlag(Qt::ShiftModifier) ? 10 : 1;
+            annotations_.translateAt(
+                static_cast<std::size_t>(selectedIndex_), dx * step, dy * step);
+            rebuildComposed();
+            update();
+            qInfo().noquote()
+                << QStringLiteral("[jie2] 移动选中标注（%1,%2，步长 %3px）")
+                       .arg(dx * step)
+                       .arg(dy * step)
+                       .arg(step);
+            return;
+        }
+    } else if (selectedIndex_ >= 0) {
+        selectedIndex_ = -1;  // 越界（例如撤销导致条目减少）：静默重置
     }
     // 数字键 1-9 快速切换工具。
     if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {

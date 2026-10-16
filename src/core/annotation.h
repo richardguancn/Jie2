@@ -101,6 +101,10 @@ public:
     /// 按索引移除（供交互层做更精细的控制）。
     bool removeAt(std::size_t index);
 
+    /// 平移指定标注（专业版对齐项 v2.8：自由选中 + 二次编辑的基础）。
+    /// 平移所有点；返回是否执行。
+    bool translateAt(std::size_t index, int dx, int dy);
+
     void clear();
 
 private:

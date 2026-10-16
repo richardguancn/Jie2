@@ -440,8 +440,10 @@ void PinWindow::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
         return;
     }
-    // Shift+双击 = 缩略图模式；裸双击 = 关闭（对齐 Snipaste）。
-    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+    // 修饰键+双击 = 缩略图模式（修饰键可配置，专业版 v2.11）；
+    // 裸双击 = 关闭（对齐 Snipaste）。
+    if (thumbnailModifier_ != Qt::NoModifier &&
+        event->modifiers().testFlag(thumbnailModifier_)) {
         toggleThumbnail();
         return;
     }

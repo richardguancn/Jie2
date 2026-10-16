@@ -48,6 +48,12 @@ public:
         shiftEscAction_ = shiftEsc;
     }
 
+    /// 缩略图修饰键（专业版对齐项 v2.11：可自定义缩略图快捷键）。
+    /// 默认 Shift+双击；可配置为 Ctrl+双击 / Alt+双击。
+    void setThumbnailModifier(Qt::KeyboardModifier modifier) {
+        thumbnailModifier_ = modifier;
+    }
+
     /// 从剪贴板内容创建：图像 / 文本 / 颜色值 / 图像文件路径。
     /// 失败时返回 nullptr 并通过 error 说明原因（不静默）。
     /// 调用方负责 delete。
@@ -126,6 +132,7 @@ private:
     bool selected_ = false;  // 选中态（Ctrl+A 全选后拖动联动）
     DismissAction escAction_ = DismissAction::Close;         // Esc 默认关闭
     DismissAction shiftEscAction_ = DismissAction::Hide;     // Shift+Esc 默认隐藏
+    Qt::KeyboardModifier thumbnailModifier_ = Qt::ShiftModifier;  // 缩略图修饰键
     double scale_ = 1.0;
     double opacityPercent_ = 100.0;
     bool mouseThrough_ = false;

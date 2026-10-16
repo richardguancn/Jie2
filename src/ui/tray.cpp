@@ -1204,6 +1204,8 @@ void TrayController::triggerPin() {
 
     // Esc / Shift+Esc 动作（专业版 v2.8：可自定义）。
     pin->setDismissActions(pinEscAction_, pinShiftEscAction_);
+    // 缩略图修饰键（专业版 v2.11：可自定义）。
+    pin->setThumbnailModifier(pinThumbnailModifier_);
 
     pins_.push_back(pin);
     pinsHidden_ = false;
@@ -1772,6 +1774,19 @@ void TrayController::loadConfig() {
         pinShiftEscAction_ =
             shiftEscAction == "hide" ? PinWindow::DismissAction::Hide
                                      : PinWindow::DismissAction::Close;
+    }
+
+    // 缩略图修饰键（专业版对齐项 v2.11：可自定义缩略图快捷键）。
+    // 值："shift"（默认）| "ctrl" | "alt"。
+    {
+        const std::string modifier = config.get("pin.thumbnail_modifier", "shift");
+        if (modifier == "ctrl") {
+            pinThumbnailModifier_ = Qt::ControlModifier;
+        } else if (modifier == "alt") {
+            pinThumbnailModifier_ = Qt::AltModifier;
+        } else {
+            pinThumbnailModifier_ = Qt::ShiftModifier;
+        }
     }
 
     // OCR（M5）

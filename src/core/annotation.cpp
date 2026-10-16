@@ -119,6 +119,22 @@ bool AnnotationDocument::removeAt(std::size_t index) {
     return true;
 }
 
+bool AnnotationDocument::translateAt(std::size_t index, int dx, int dy) {
+    if (index >= items_.size() || (dx == 0 && dy == 0)) {
+        return false;
+    }
+    // 平移点集即可平移整条标注（所有绘制类型都由 points 驱动）。
+    // 注意不清空 redo 栈：平移是"编辑现有对象"，而 redo 栈描述的是
+    // 增删序列 —— 这与 Snipaste 的"平移后仍可撤销"一致性无关紧要，
+    // 但保持简单：不做 redo 交互。
+    Annotation& item = items_[index];
+    for (Point& point : item.points) {
+        point.x += dx;
+        point.y += dy;
+    }
+    return true;
+}
+
 std::vector<const Annotation*> AnnotationDocument::pixelOpItems() const {
     std::vector<const Annotation*> result;
     for (const Annotation& item : items_) {

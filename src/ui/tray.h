@@ -248,6 +248,10 @@ private:
     PinWindow::DismissAction pinEscAction_ = PinWindow::DismissAction::Close;
     PinWindow::DismissAction pinShiftEscAction_ = PinWindow::DismissAction::Hide;
 
+    // 缩略图修饰键（专业版 v2.11：可自定义缩略图快捷键）。
+    // 从配置 pin.thumbnail_modifier 读取（shift|ctrl|alt）。
+    Qt::KeyboardModifier pinThumbnailModifier_ = Qt::ShiftModifier;
+
     // ---- 文字识别（M5）----
     core::OcrConfig ocrConfig_;
 
