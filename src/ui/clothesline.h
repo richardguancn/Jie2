@@ -73,6 +73,9 @@ public:
     /// 供测试查询。
     int itemCount() const { return static_cast<int>(entries_.size()); }
     bool isRevealed() const { return revealed_; }
+    /// 供离屏渲染测试驱动动效（生产路径走 tick 轮询触发）。
+    void revealForTest(const QRect& area) { reveal(area); }
+    void nudgeForTest(int index, double degrees) { nudge(index, degrees); }
 
     /// 主题（专业版对齐项 v2.6：主题色跟随系统主题）。
     void setDarkTheme(bool dark);
