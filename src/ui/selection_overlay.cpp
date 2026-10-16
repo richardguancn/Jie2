@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include <QApplication>
 #include <QClipboard>
@@ -165,7 +166,17 @@ SelectionOverlay::Outcome SelectionOverlay::run(const QPixmap& frozen,
                                                 QScreen* screen,
                                                 Options options) {
     SelectionOverlay overlay(frozen, scaleFactor, screen, std::move(options));
-    const int code = overlay.exec();
+    // 不用 QDialog::exec()：**exec() 期间对话框被 hide() 会让它立刻返回
+    // Rejected**（实测 Qt 6.4/X11，已用最小 Qt 程序单独复现）。而 F5 刷新
+    // 必须临时隐藏遮罩才能拍到干净屏幕 —— 旧实现里按 F5 等于"取消截图"
+    // （该缺陷因旧版没有 F5 自动化测试而长期潜伏，本轮补测试时暴露）。
+    // 自管事件循环下 hide()/show() 只是普通事件；accept/reject 仍经
+    // finished 信号正常结束循环，返回值语义与 exec() 一致。
+    QEventLoop loop;
+    QObject::connect(&overlay, &QDialog::finished, &loop, &QEventLoop::quit);
+    overlay.show();
+    loop.exec();
+    const int code = overlay.result();
     Outcome result = overlay.outcome();
     result.accepted = (code == QDialog::Accepted) && !result.selection.isEmpty();
     return result;
@@ -263,18 +274,40 @@ void SelectionOverlay::recapture() {
         update();
         return;
     }
+    // 记录刷新前的几何：同一屏的实时刷新几何不变 → 按 v2.7.2
+    // （"刷新截图，保持已有标注不变"）**保留标注与选区**；
+    // 历史图 → 实时屏的切换可能改变显示几何（图像尺寸/缩放不同）→
+    // 坐标语义已变，此时才清空。
+    const QRect oldRect = frozenLogicalRect_;
+    const double oldScale = frozenPixelScale_;
+    const bool wasHistory = historyIndex_ >= 0;
+
     screenImage_ = fresh.toImage();
     historyIndex_ = -1;
     setFrozenImage(screenImage_, true);
-    // 刷新后画面是新的：旧标注基于旧图，必须清空（坐标语义已变）。
-    annotations_.clear();
-    composedDirty_ = true;
-    hasSelection_ = false;
-    selectionRect_ = QRect();
-    snapActive_ = false;
-    dragging_ = false;
-    showToast(QStringLiteral("已刷新截图"));
-    qInfo().noquote() << QStringLiteral("[jie2] F5 刷新截图完成");
+
+    const bool geometryPreserved =
+        !wasHistory && frozenLogicalRect_ == oldRect &&
+        frozenPixelScale_ == oldScale;
+    if (geometryPreserved) {
+        rebuildComposed();
+        showToast(QStringLiteral("已刷新截图（标注保留 %1 条）")
+                      .arg(annotations_.size()));
+        qInfo().noquote()
+            << QStringLiteral("[jie2] F5 刷新截图完成（几何不变，保留标注 %1 条）")
+                   .arg(annotations_.size());
+    } else {
+        annotations_.clear();
+        selectedIndex_ = -1;
+        composedDirty_ = true;
+        hasSelection_ = false;
+        selectionRect_ = QRect();
+        snapActive_ = false;
+        dragging_ = false;
+        showToast(QStringLiteral("已刷新截图（画面几何已变，标注已清空）"));
+        qInfo().noquote()
+            << QStringLiteral("[jie2] F5 刷新截图完成（几何变化，清空标注）");
+    }
     update();
 }
 
@@ -816,6 +849,12 @@ void SelectionOverlay::cancelTextInput() {
     }
 }
 
+int SelectionOverlay::nextNumberValue() const {
+    // 基数是"已有序号数 + 1"（撤销后数字重用 —— 与 nextNumberLabel 同语义），
+    // 再叠加用户用 +/- 做的偏移，下限 1。
+    return std::max(1, std::stoi(annotations_.nextNumberLabel()) + numberOffset_);
+}
+
 void SelectionOverlay::placeNumberMarker(const QPoint& logicalPos) {
     const QPoint imagePoint = imagePos(logicalPos);
     core::Annotation item;
@@ -823,7 +862,7 @@ void SelectionOverlay::placeNumberMarker(const QPoint& logicalPos) {
     item.style.color = currentColor();
     item.style.width = currentWidth_;
     item.points.push_back(core::Point{imagePoint.x(), imagePoint.y()});
-    item.text = annotations_.nextNumberLabel();
+    item.text = std::to_string(nextNumberValue());
     // 先留副本再 move：move 之后 item.text 已空，日志会显示成 "number="。
     const QString label = QString::fromStdString(item.text);
     if (annotations_.add(std::move(item))) {
@@ -1719,6 +1758,17 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         }
     } else if (selectedIndex_ >= 0) {
         selectedIndex_ = -1;  // 越界（例如撤销导致条目减少）：静默重置
+    }
+    // 序号工具：+ / - 调整下一个序号（专业版对齐项 v2.5.2：
+    // "第一个数字可大于 1；+/- 调整序号"）。等号键与加减键盘都接受。
+    if (currentTool_ == core::AnnotationTool::Number &&
+        (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal ||
+         event->key() == Qt::Key_Minus)) {
+        const int delta = (event->key() == Qt::Key_Minus) ? -1 : 1;
+        numberOffset_ = std::clamp(numberOffset_ + delta, -99, 99);
+        showToast(QStringLiteral("下一个序号：%1").arg(nextNumberValue()));
+        update();
+        return;
     }
     // 数字键 1-9 快速切换工具。
     if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {

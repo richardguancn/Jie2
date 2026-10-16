@@ -54,6 +54,8 @@ if [ "$BATCH" = "all" ] || [ "$BATCH" = "B" ]; then
     item "自定义快捷键" 120 "bash scripts/test-shortcuts-linux.sh | grep -q '^PASS'"
     item "橡皮擦增强" 150 "bash scripts/test-eraser-tools-linux.sh | grep -q '^PASS'"
     item "标注拖动/缩放" 150 "bash scripts/test-annotate-scale-linux.sh | grep -q '^PASS'"
+    item "F5 刷新保留标注" 150 "bash scripts/test-f5-refresh-linux.sh | grep -q '^PASS'"
+    item "序号调整" 120 "bash scripts/test-number-offset-linux.sh | grep -q '^PASS'"
     item "主题跟随系统" 150 "bash scripts/test-theme-linux.sh | grep -q '^PASS'"
     item "Wayland 热键门户" 120 "bash scripts/test-wayland-portal.sh | grep -q '^PASS'"
     item "Wayland 截图门户" 120 "bash scripts/test-wayland-capture.sh | grep -q '^PASS'"

@@ -188,37 +188,76 @@ core::OcrResult OcrRunner::scanBarcode(const core::ImageBuffer& image) {
         }
     }
 
-    QProcess process;
-    process.setProgram(executable);
-    // --raw：只输出解码文本；-q：抑制进度噪声。
-    process.setArguments({QStringLiteral("--raw"), QStringLiteral("-q"), inputPath});
-    process.start();
-    if (!process.waitForStarted(10000)) {
-        return core::OcrResult::failure("zbarimg 启动超时", "zbar");
+    // 跑一次 zbarimg，返回（退出码, stdout, 进程级错误）。
+    // 退出码约定：0 = 找到并解码；4 = **没有找到码**（不是错误）。
+    const auto runZbar = [&executable](const QString& path) {
+        struct Attempt {
+            int code = -1;
+            QString output;
+            QString processError;  // 空 = 进程正常退出
+        };
+        Attempt attempt;
+        QProcess process;
+        process.setProgram(executable);
+        // --raw：只输出解码文本；-q：抑制进度噪声。
+        process.setArguments({QStringLiteral("--raw"), QStringLiteral("-q"), path});
+        process.start();
+        if (!process.waitForStarted(10000)) {
+            attempt.processError = QStringLiteral("zbarimg 启动超时");
+            return attempt;
+        }
+        if (!process.waitForFinished(20000)) {
+            process.kill();
+            attempt.processError = QStringLiteral("zbarimg 超时");
+            return attempt;
+        }
+        if (process.exitStatus() != QProcess::NormalExit) {
+            attempt.processError = QStringLiteral("zbarimg 异常退出");
+            return attempt;
+        }
+        attempt.code = process.exitCode();
+        attempt.output =
+            QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        return attempt;
+    };
+
+    const auto first = runZbar(inputPath);
+    if (!first.processError.isEmpty()) {
+        return core::OcrResult::failure(first.processError.toStdString(), "zbar");
     }
-    if (!process.waitForFinished(20000)) {
-        process.kill();
-        return core::OcrResult::failure("zbarimg 超时", "zbar");
-    }
-    // zbarimg 的退出码约定：0 = 找到并解码；4 = **没有找到码**（不是错误）。
-    const int code = process.exitCode();
-    const QString output = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-    if (process.exitStatus() != QProcess::NormalExit) {
-        return core::OcrResult::failure("zbarimg 异常退出", "zbar");
-    }
-    if (code != 0 && code != 4) {
-        const QString stderrText =
-            QString::fromUtf8(process.readAllStandardError()).trimmed();
+    if (first.code != 0 && first.code != 4) {
         return core::OcrResult::failure(
-            QStringLiteral("zbarimg 退出码 %1：%2").arg(code).arg(stderrText.left(200))
-                .toStdString(),
+            QStringLiteral("zbarimg 退出码 %1").arg(first.code).toStdString(),
             "zbar");
     }
-    if (output.isEmpty()) {
-        // 码未识别到：如实返回空文本（与 OCR 的"没识别到文字"同一语义）。
-        return core::OcrResult::success("", "zbar");
+    if (!first.output.isEmpty()) {
+        return core::OcrResult::success(first.output.toStdString(), "zbar");
     }
-    return core::OcrResult::success(output.toStdString(), "zbar");
+
+    // 深色背景增强（对齐 Snipaste v2.10.6"改善深色背景下的二维码识别"）：
+    // 第一次没识别到时，把图像**反色**再试一次 —— 深底浅码在反色后对比度
+    // 翻转，zbar 往往就能读到。两次都失败才如实返回空文本。
+    const QString invertedPath = dir.filePath(QStringLiteral("barcode-inverted.png"));
+    {
+        QImage qimage = toQImage(image);
+        if (!qimage.isNull()) {
+            qimage = qimage.convertToFormat(QImage::Format_ARGB32);
+            qimage.invertPixels(QImage::InvertRgb);
+            if (qimage.save(invertedPath, "PNG")) {
+                const auto second = runZbar(invertedPath);
+                if (second.processError.isEmpty() && second.code == 0 &&
+                    !second.output.isEmpty()) {
+                    qInfo().noquote()
+                        << QStringLiteral("[jie2] 条码识别：深色背景反色重试成功");
+                    return core::OcrResult::success(second.output.toStdString(),
+                                                    "zbar");
+                }
+            }
+        }
+    }
+
+    // 码未识别到：如实返回空文本（与 OCR 的"没识别到文字"同一语义）。
+    return core::OcrResult::success("", "zbar");
 }
 
 core::OcrResult OcrRunner::runSystem(const core::OcrConfig& config,

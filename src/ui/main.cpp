@@ -230,6 +230,33 @@ int runTestBarcode() {
                     content.toUtf8().constData());
         return 1;
     }
+
+    // 深色背景增强（对齐 Snipaste v2.10.6"改善深色背景下的二维码识别"）：
+    // 把二维码反色（浅码深底）后提交给 scanBarcode —— 直接失败时它会在
+    // 内部走"反色重试"路径；无论哪条路径命中，结果必须一致。
+    {
+        QImage dark = qr.convertToFormat(QImage::Format_ARGB32);
+        dark.invertPixels(QImage::InvertRgb);
+        const QImage darkRgba = dark.convertToFormat(QImage::Format_RGBA8888);
+        core::ImageBuffer darkBuffer(darkRgba.width(), darkRgba.height(),
+                                     core::PixelFormat::RGBA8888);
+        for (int y = 0; y < darkRgba.height(); ++y) {
+            std::memcpy(darkBuffer.scanline(y), darkRgba.constScanLine(y),
+                        static_cast<std::size_t>(darkRgba.width()) * 4);
+        }
+        const core::OcrResult darkResult =
+            jie2::ui::OcrRunner::scanBarcode(darkBuffer);
+        if (!darkResult.ok) {
+            std::printf("dark-barcode failed: %s\n", darkResult.error.c_str());
+            return 1;
+        }
+        if (QString::fromStdString(darkResult.text).trimmed() != content) {
+            std::printf("dark-barcode verification failed: got %s\n",
+                        darkResult.text.c_str());
+            return 1;
+        }
+        std::printf("dark-barcode ok（浅码深底识别成功）\n");
+    }
     std::printf("barcode verification passed\n");
     return 0;
 }

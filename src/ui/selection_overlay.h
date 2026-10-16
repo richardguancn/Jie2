@@ -147,6 +147,8 @@ private:
 
     /// 在指定位置弹出内联文字输入框（回车提交、Esc 取消）。
     void startTextInput(const QPoint& logicalPos);
+    /// 下一个序号值（已有序号数 + 1 + numberOffset_，下限 1）。
+    int nextNumberValue() const;
     /// 提交/取消文字输入。
     void commitTextInput();
     void cancelTextInput();
@@ -220,6 +222,9 @@ private:
     int paletteSize_ = 6;           // 调色板颜色数量（专业版对齐项，可配置）
     core::ShortcutMap shortcuts_;   // 应用内快捷键映射（v2.11.3 可配置）
     int eraserAngle_ = 0;           // 橡皮擦区域旋转角（v2.6：Shift+] / Shift+[）
+    /// 序号偏移（v2.5.2："第一个数字可大于 1；+/- 调整序号"）。
+    /// 下一个序号 = 已有序号数 + 1 + numberOffset_（下限 1）。
+    int numberOffset_ = 0;
     bool drawing_ = false;          // 正在绘制一条标注
     bool erasing_ = false;          // 橡皮擦拖拽中
     int selectedIndex_ = -1;        // 自由选中（v2.8）：当前选中的标注索引（-1=无）
