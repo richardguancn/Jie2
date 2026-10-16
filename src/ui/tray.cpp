@@ -49,6 +49,8 @@ namespace jie2::ui {
 namespace {
 
 constexpr const char* kHotkeyId = "toggle-capture";
+// Ctrl+Alt+C（专业版对齐项 v2.5）：把剪贴板中的图像直接保存为文件。
+constexpr const char* kSaveClipboardHotkeyId = "save-clipboard-image";
 // 贴图热键（M4）。Snipaste 默认 F3，但 F3 在多数系统上被占用概率高
 // （浏览器搜索、IDE 查找），改用 Ctrl+Alt+P：P = Pin。
 constexpr const char* kPinHotkeyId = "pin-clipboard";
@@ -429,7 +431,8 @@ void TrayController::rebuildMenu() {
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
 }
 
-QString TrayController::saveAndCopy(const QImage& image, QString* error) {
+QString TrayController::saveAndCopy(const QImage& image, QString* error,
+                                    bool writeClipboard) {
     const auto setError = [error](const QString& text) {
         if (error != nullptr) {
             *error = text;
@@ -466,7 +469,11 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error) {
     // 剪贴板始终写入（--no-save 也只跳过落盘，不影响剪贴板）。
     // 走 writeClipboardImage：它会记录摘要，避免这次写入引发的
     // （异步）剪贴板事件被当成"用户复制"再挂一次。
-    writeClipboardImage(output);
+    // writeClipboard=false 的调用方（Ctrl+Alt+C 保存剪贴板图像）跳过此步：
+    // 源内容本来就是剪贴板里的图，回写既多余也可能打扰用户的剪贴板状态。
+    if (writeClipboard) {
+        writeClipboardImage(output);
+    }
 
     // --no-save（M6）：只写剪贴板，不落盘、不进历史。
     if (overrides_.noSave) {
@@ -1208,6 +1215,31 @@ void TrayController::triggerPin() {
     rebuildMenu();
 }
 
+void TrayController::triggerSaveClipboardImage() {
+    // 专业版对齐项 v2.5：Ctrl+Alt+C 将剪贴板中的图像保存为文件
+    // （与"贴图"共享同一套输出逻辑：装饰 / --size / 色彩标记 / 落盘，
+    //   但不回写剪贴板 —— 源本来就是剪贴板内容）。
+    const QClipboard* clipboard = QApplication::clipboard();
+    QImage image;
+    if (clipboard != nullptr && clipboard->mimeData() != nullptr &&
+        clipboard->mimeData()->hasImage()) {
+        image = clipboard->image();
+    }
+    if (image.isNull()) {
+        note(QStringLiteral("剪贴板中没有图像"),
+             QStringLiteral("先复制一张图，再按 Ctrl+Alt+C"), /*warning=*/true);
+        return;
+    }
+    QString error;
+    const QString path = saveAndCopy(image, &error, /*writeClipboard=*/false);
+    if (path.isEmpty() || path == QStringLiteral("(clipboard)")) {
+        note(QStringLiteral("保存失败"), error, /*warning=*/true);
+        return;
+    }
+    qInfo().noquote() << QStringLiteral("[jie2] 已保存剪贴板图像：%1").arg(path);
+    note(QStringLiteral("已保存剪贴板图像"), path);
+}
+
 void TrayController::toggleHidePins() {
     if (pins_.empty()) {
         note(QStringLiteral("没有贴图"), QStringLiteral("先用 Ctrl+Alt+P 贴一张出来"));
@@ -1381,7 +1413,8 @@ void TrayController::showPinGroupManager() {
 void TrayController::activateExistingInstance() {
     qInfo().noquote() << QStringLiteral("[jie2] 唤起已有实例");
     note(QStringLiteral("截2 已在运行"),
-         QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图"));
+         QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图，"
+                        "Ctrl+Alt+C 保存剪贴板图像"));
 }
 
 void TrayController::toggleSelectAllPins() {
@@ -1634,6 +1667,24 @@ void TrayController::registerHotkey() {
             << QStringLiteral("[jie2] 贴图热键注册失败：%1").arg(pinHotkeyError_);
     }
 
+    // 保存剪贴板图像热键（专业版对齐项 v2.5）：Ctrl+Alt+C。
+    platform::HotkeySpec saveClipSpec;
+    saveClipSpec.id = kSaveClipboardHotkeyId;
+    saveClipSpec.modifiers = platform::kModCtrl | platform::kModAlt;
+    saveClipSpec.key = platform::Key::C;
+    std::string saveClipError;
+    saveClipboardHotkeyRegistered_ = platform_->grabHotkey(
+        saveClipSpec, &TrayController::hotkeyThunk, this, &saveClipError);
+    if (saveClipboardHotkeyRegistered_) {
+        qInfo().noquote() << QStringLiteral("[jie2] 保存剪贴板热键已注册：%1")
+                                 .arg(QString::fromStdString(
+                                     platform::describeHotkey(saveClipSpec)));
+    } else {
+        qWarning().noquote()
+            << QStringLiteral("[jie2] 保存剪贴板热键注册失败：%1")
+                   .arg(QString::fromStdString(saveClipError));
+    }
+
     if (menu_ != nullptr) {
         rebuildMenu();
     }
@@ -1656,6 +1707,11 @@ void TrayController::handleHotkey(const std::string& id) {
     if (id == kPinHotkeyId) {
         qInfo().noquote() << QStringLiteral("[jie2] 热键触发贴图");
         triggerPin();
+        return;
+    }
+    if (id == kSaveClipboardHotkeyId) {
+        qInfo().noquote() << QStringLiteral("[jie2] 热键触发：保存剪贴板图像为文件");
+        triggerSaveClipboardImage();
         return;
     }
     if (id != kHotkeyId) {

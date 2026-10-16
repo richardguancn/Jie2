@@ -241,6 +241,7 @@ private:
     std::string pinHotkeyId_;
     bool pinHotkeyRegistered_ = false;
     QString pinHotkeyError_;
+    bool saveClipboardHotkeyRegistered_ = false;  // Ctrl+Alt+C（专业版 v2.5）
 
     // 贴图 Esc 行为（专业版 v2.8：可自定义 Esc / Shift+Esc 的功能）。
     // 从配置 pin.esc_action / pin.shift_esc_action 读取（close|hide）。
@@ -259,7 +260,12 @@ private:
     void recordCapture(const QString& path, const QImage& image);
 
     /// 保存 PNG 到截图目录并写入剪贴板（截图落点的公共实现）。
-    QString saveAndCopy(const QImage& image, QString* error);
+    /// writeClipboard=false 时只落盘不回写（Ctrl+Alt+C 保存剪贴板图像用）。
+    QString saveAndCopy(const QImage& image, QString* error,
+                        bool writeClipboard = true);
+
+    /// Ctrl+Alt+C：把剪贴板中的图像保存为文件（专业版对齐项 v2.5）。
+    void triggerSaveClipboardImage();
 
     /// 平台层回调是裸函数指针，这里做静态跳板。
     static void hotkeyThunk(const std::string& id, void* userData);

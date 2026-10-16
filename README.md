@@ -178,6 +178,7 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | **贴图全选拖动**（专业版 v2.4） | — | ✅ **E2E**：3 张同步位移 (120,60)；取消全选后不再联动 |
 | **贴图 Esc 自定义**（专业版 v2.8） | — | ✅ **E2E**：默认 Esc 关闭销毁；`esc=hide` 配置下只隐藏（窗口保留不可见） |
 | **--keep-aspect-ratio**（v2.8.6） | ✅ 80×20 源 + 200×70 → 200×50（保 4:1） | 同左（共用输出管线） |
+| **Ctrl+Alt+C 保存剪贴板图像**（v2.5） | ✅ 三个热键（T/P/C）macOS 注册成功 | ✅ **E2E**：两张图各存一次、原始尺寸；无图时不静默 |
 | **layer-shell 顶部条**（Wayland 衣架） | —（macOS 无此概念） | ✅ **五项全过**（Sway 真实合成器）：自动切换 / items 文件 / 无孤儿 / 输出像素（缩略图色值精确）/ 层叠语义（盖住普通窗口） |
 | **贴图分组管理窗口** | — | ✅ `--show-group-manager` 可重复打开（Esc 关闭后主实例存活） |
 | **Windows 后端** | — | ✅ **双工具链**交叉编译（brew GCC 16.2.0/UCRT + Debian GCC 12-posix/msvcrt）+ 导入表检查；运行级验证待 Windows 实机 |
@@ -319,6 +320,11 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
   （close = 关闭并移除 | hide = 隐藏保留，可由托盘「显示全部贴图」恢复）。
   实测两场景（`scripts/test-pin-esc-linux.sh`）：默认 Esc=关闭（窗口销毁）；
   配 esc=hide 后 Esc 只隐藏（窗口保留、不可见）。
+- **M4 增补：Ctrl+Alt+C 保存剪贴板图像为文件**（专业版对齐项 v2.5）——
+  新全局热键：把剪贴板中的图像直接落盘（复用截图输出管线：装饰/尺寸/色彩
+  标记，但**不回写剪贴板**——源本来就是剪贴板内容）。
+  实测（`scripts/test-clipboard-save-linux.sh`）：两张不同尺寸的图各保存
+  一次、尺寸与原图一致；剪贴板无图时给出提示不静默。
 - **M6 增补：二维码/条形码识别**（专业版对齐项 `barcode-scan` / `barcode-decode`）——
   zbar 后端（`zbarimg`）+ 托盘菜单「识别二维码/条形码」+ CLI 文件入口。
   实测：qrencode 生成 "JIE2-BARCODE-TEST" → 识别内容精确匹配；
