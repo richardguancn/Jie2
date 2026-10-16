@@ -20,7 +20,14 @@ else()
     target_compile_options(jie2_platform PRIVATE -Wall -Wextra)
 endif()
 
-if(APPLE)
+if(WIN32)
+    # Windows（Win32）实现：GDI 抓屏、RegisterHotKey、窗口枚举。
+    # 已通过 mingw-w64 交叉编译验证；实机运行验证待 Windows 环境
+    # （见 windows_platform.cpp 头部的状态声明与验证清单）。
+    target_sources(jie2_platform PRIVATE windows/windows_platform.cpp)
+    target_link_libraries(jie2_platform PRIVATE user32 gdi32 shcore)
+    message(STATUS "jie2: Windows platform backend enabled (compile-verified via mingw)")
+elseif(APPLE)
     target_sources(jie2_platform PRIVATE macos/macos_platform.mm)
     target_link_libraries(jie2_platform PRIVATE
         "-framework Carbon"
@@ -82,4 +89,9 @@ elseif(UNIX)
     else()
         message(STATUS "jie2: libdbus-1 not found — Wayland hotkeys disabled in this build")
     endif()
+
+    # 注意：Wayland layer-shell（衣架顶部条）**不在这里**实现。
+    # 架构决策（见 src/tools/jie2_line.cpp 头部注释）：Qt6 不暴露底层
+    # wl_surface，无法给 Qt 窗口设置 layer 角色 —— 因此走**独立进程**
+    # jie2-line（纯 wayland-client 渲染器），其构建配置在 src/tools/CMakeLists.txt。
 endif()

@@ -18,6 +18,7 @@
 
 class QAction;
 class QMenu;
+class QProcess;
 class QScreen;
 class QTimer;
 
@@ -75,6 +76,21 @@ public:
     /// （保留在内存与列表里）。传 -1 表示"下一组"（循环）。
     void switchPinGroup(int group);
 
+    /// 清空当前贴图组（专业版命令行 `empty-group` 的语义）。
+    /// 覆盖所有贴图类型：关闭 = 可再贴出（销毁语义由贴图自身的关闭行为处理）。
+    /// 返回被关闭的贴图数量。
+    int emptyCurrentPinGroup();
+
+    /// 显示"贴图分组管理"对话框（专业版命令行 `show-group-manager`）。
+    /// 列出各组贴图数量，可切换/清空。
+    void showPinGroupManager();
+
+    /// 唤起已有实例的提示（二次启动时由单实例通道调用）。
+    void activateExistingInstance();
+
+    /// 供测试查询：当前组内贴图数量。
+    int currentGroupPinCount() const;
+
     // ---- 供自动化验证（--test-pin-groups）----
     /// 直接创建 N 张纯色测试贴图（不经过剪贴板），返回创建数量。
     int createTestPins(int count);
@@ -130,6 +146,16 @@ private:
 
     /// 衣架（M3）：把历史条目喂给衣架窗口。
     void refreshClothesline();
+
+    // ---- Wayland 顶部条（B 项：layer-shell）----
+    //
+    // Wayland 会话下 Qt 窗口不能定位（合成器不接受 move），所以 Qt 衣架
+    // 窗口无法贴到屏幕顶边。改用独立的 jie2-line 进程渲染 layer-shell
+    // 顶部条：主程序把条目写入 items 文件，jie2-line 轮询并重绘。
+    void updateWaylandLine();   // 写 items 文件 + 确保 jie2-line 在运行
+    void stopWaylandLine();     // 退出时终止子进程
+    /// 查找 jie2-line 可执行文件（环境变量 → 同目录 → 构建树 → PATH）。
+    static QString findLineBinary();
 
     /// 剪贴板图片监听（M3 增补）：复制了图像就自动挂上衣架。
     /// 对齐 tendedero 的 "Hang copied images"：只处理纯图像 ——
@@ -196,6 +222,10 @@ private:
     bool clipboardWatchEnabled_ = true;
     QByteArray lastClipboardDigest_;   // 去重：同一图像不重复挂
     bool clipboardProcessing_ = false; // 防重入（监听处理期间不再进入）
+
+    // ---- Wayland 顶部条（B 项）----
+    bool waylandLineEnabled_ = false;
+    QProcess* lineProcess_ = nullptr;
 
     // ---- 贴图（M4）----
     std::vector<PinWindow*> pins_;

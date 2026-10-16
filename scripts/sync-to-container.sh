@@ -20,7 +20,7 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
 fi
 
 echo "== 同步到 $CONTAINER =="
-for dir in src scripts tests packaging; do
+for dir in src scripts tests packaging third_party; do
     [ -e "$dir" ] || continue
     docker cp "$dir/." "$CONTAINER:/work/$dir/" >/dev/null
     echo "  synced: $dir"

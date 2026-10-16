@@ -46,6 +46,10 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
     // 滑入滑出动画：用固定步长的位移代替 QPropertyAnimation ——
     // 窗口位置动画在部分合成器上被忽略（Wayland 不允许应用定位窗口），
     // 而这里动画的其实是"窗口内的可视条带"，用定时器驱动最可控。
+    //
+    // 注：Wayland 下本窗口根本不创建（改走 jie2-line 子进程的 layer-shell
+    // 顶部条，见 tray.cpp 的 waylandLineEnabled_ 分支），因此这里只有
+    // "窗口位移"一种形态。
     animTimer_ = new QTimer(this);
     connect(animTimer_, &QTimer::timeout, this, [this]() {
         const int current = y();

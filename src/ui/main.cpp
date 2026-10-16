@@ -1,10 +1,13 @@
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <utility>
 
 #include <QApplication>
 #include <QColor>
+#include <QCoreApplication>
 #include <QCursor>
+#include <QDebug>
 #include <QFile>
 #include <QGuiApplication>
 #include <QMessageBox>
@@ -15,6 +18,8 @@
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QTimer>
 
 #include "core/annotation.h"
 #include "core/ocr.h"
@@ -22,6 +27,7 @@
 #include "ui/annotation_render.h"
 #include "ui/ocr_runner.h"
 #include "ui/pin_window.h"
+#include "ui/single_instance.h"
 #include "ui/tray.h"
 
 namespace {
@@ -468,6 +474,57 @@ int runTestAnnotate(const QString& outPath) {
     return 0;
 }
 
+/// SIGTERM/SIGINT 的优雅退出标志。
+///
+/// 为什么需要：Qt 默认**不处理** SIGTERM —— `kill` 一个 Qt 应用会直接
+/// 终止进程、不跑任何析构。而本项目在析构里做两件必须做的事：
+/// 保存配置、终止 jie2-line 子进程（否则它变成孤儿窗口）。
+/// 处理方式：信号处理器只记标志（异步信号安全的写法），
+/// 由事件循环里的定时器轮询并触发正常退出。
+volatile std::sig_atomic_t g_quitSignal = 0;
+
+void handleQuitSignal(int signalNumber) { g_quitSignal = signalNumber; }
+
+/// 单实例通道的标识：固定前缀 + 用户名（同一台机器的不同用户互不干扰）。
+QString singleInstanceId() {
+    return QStringLiteral("jie2-single-") +
+           qEnvironmentVariable("USER", QStringLiteral("user"));
+}
+
+/// 命令行用法（--help）。
+void printUsage() {
+    std::printf(
+        "截2 %s —— 跨平台截图 / 标注 / 贴图工具\n"
+        "\n"
+        "运行实例命令（发送给已在运行的实例；无实例时报错）：\n"
+        "  --empty-group            清空当前贴图分组\n"
+        "  --show-group-manager     打开贴图分组管理窗口\n"
+        "  （不带参数启动        = 唤起已有实例；没有实例时启动常驻模式）\n"
+        "\n"
+        "一次性截图（独立执行，不影响运行实例）：\n"
+        "  --select-rect x,y,w,h    截取指定区域（逻辑坐标，相对目标屏）\n"
+        "  --select                 打开交互式截图遮罩\n"
+        "  --capture-once           抓主屏一张（自动化验证用）\n"
+        "  --whiteboard [color]     白板模式：纯色画布 + 标注\n"
+        "  --hold                   截图后先标注再输出（等价于 --select）\n"
+        "  --block [SECONDS]        兼容参数（本 CLI 天然同步）\n"
+        "\n"
+        "输出选项：\n"
+        "  -o, --output <path>      显式输出路径（.png / .jpg）\n"
+        "  --no-save                只写剪贴板不落盘\n"
+        "  --size W H               强制输出尺寸\n"
+        "  --shadow / --no-shadow   阴影开关\n"
+        "  --border N               边框宽度\n"
+        "  --round N                圆角半径\n"
+        "  --active-screen          用光标所在屏（默认主屏）\n"
+        "  --barcode-decode FILE    对本地图片识别二维码/条形码\n"
+        "\n"
+        "其它：\n"
+        "  --version                版本\n"
+        "  --help                   本帮助\n",
+        JIE2_VERSION);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -487,6 +544,8 @@ int main(int argc, char** argv) {
     QString barcodeFile;
     // 缺省为空：此时用配置文件里的 ocr.backend（便于测自定义后端）。
     QString testOcrBackend;
+    // 作用于**运行实例**的命令（走单实例通道；已实现的专业版命令行选项）。
+    QString notifyCommand;
 
     // M6 命令行覆盖项（只影响本次调用，不写入配置）。
     jie2::ui::TrayController::CaptureOverrides overrides;
@@ -578,6 +637,18 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--barcode-decode") == 0 && i + 1 < argc) {
             barcodeFile = QString::fromUtf8(argv[++i]);
         }
+        // 作用于运行实例的命令（专业版命令行选项；经单实例通道送达）。
+        if (std::strcmp(argv[i], "--empty-group") == 0) {
+            notifyCommand = QStringLiteral("--empty-group");
+        }
+        if (std::strcmp(argv[i], "--show-group-manager") == 0) {
+            notifyCommand = QStringLiteral("--show-group-manager");
+        }
+        if (std::strcmp(argv[i], "--help") == 0 ||
+            std::strcmp(argv[i], "-h") == 0) {
+            printUsage();
+            return 0;
+        }
         if (std::strcmp(argv[i], "--capture-once") == 0) {
             captureOnce = true;
         }
@@ -599,6 +670,26 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
+    }
+
+    // ---- 作用于运行实例的命令（M6 增补）----
+    //
+    // 这些命令只需要把消息送达运行中的实例，不需要图形会话：
+    // 这里用 QCoreApplication（不碰 display），因此 SSH 到无图形环境的
+    // 机器上也能把命令发给本机会话里的实例。
+    if (!notifyCommand.isEmpty()) {
+        QCoreApplication coreApp(argc, argv);
+        const QString appId = singleInstanceId();
+        if (!jie2::ui::SingleInstanceChannel::sendToRunning(
+                appId, QStringList{notifyCommand})) {
+            std::fprintf(stderr,
+                         "截2 未在运行：没有可接收「%s」的实例。\n"
+                         "先启动截2（直接运行，无参数），再执行本命令。\n",
+                         notifyCommand.toUtf8().constData());
+            return 1;
+        }
+        std::printf("已送达：%s\n", notifyCommand.toUtf8().constData());
+        return 0;
     }
 
     QApplication app(argc, argv);
@@ -744,9 +835,57 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- 常驻模式：单实例引导（M6 增补）----
+    //
+    // 先尝试把"唤起"消息送给已有实例；送不到就自己成为主实例。
+    // 这样同一时间只有一个常驻托盘（二次启动只唤起），
+    // 而 --empty-group / --show-group-manager 也有一个稳定的投递目标。
+    const QString appId = singleInstanceId();
+    if (jie2::ui::SingleInstanceChannel::sendToRunning(appId, QStringList{})) {
+        std::printf("截2 已在运行（已唤起现有实例）\n");
+        return 0;
+    }
+    jie2::ui::SingleInstanceChannel channel;
+    if (!channel.listen(appId)) {
+        // 竞争兜底：与另一个"刚刚启动、还没开始监听"的实例撞上了。
+        // 给它一小段时间，再试一次送达。
+        QThread::msleep(150);
+        if (jie2::ui::SingleInstanceChannel::sendToRunning(appId, QStringList{})) {
+            std::printf("截2 已在运行（已唤起现有实例）\n");
+            return 0;
+        }
+        std::fprintf(stderr, "截2 启动失败：单实例通道不可用（%s）\n",
+                     channel.lastError().toUtf8().constData());
+        return 1;
+    }
+    channel.setCommandHandler([&controller](const QStringList& args) {
+        if (args.contains(QStringLiteral("--empty-group"))) {
+            controller.emptyCurrentPinGroup();
+        } else if (args.contains(QStringLiteral("--show-group-manager"))) {
+            controller.showPinGroupManager();
+        } else {
+            controller.activateExistingInstance();
+        }
+    });
+
     if (!controller.start()) {
         return 1;
     }
 
-    return QApplication::exec();
+    // 优雅退出：kill / Ctrl+C 时走正常退出路径（析构 → 停子进程、存配置）。
+    std::signal(SIGTERM, handleQuitSignal);
+    std::signal(SIGINT, handleQuitSignal);
+    QTimer signalWatch;
+    QObject::connect(&signalWatch, &QTimer::timeout, []() {
+        if (g_quitSignal != 0) {
+            qInfo().noquote()
+                << QStringLiteral("[jie2] 收到退出信号 %1，正在优雅退出…")
+                       .arg(static_cast<int>(g_quitSignal));
+            QCoreApplication::quit();
+        }
+    });
+    signalWatch.start(200);
+
+    const int exitCode = QApplication::exec();
+    return exitCode;
 }

@@ -11,22 +11,28 @@
 #include <QCursor>
 #include <QDateTime>
 #include <QDebug>
+#include <QDialog>
 #include <QMimeData>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPixmap>
+#include <QProcess>
+#include <QPushButton>
 #include <QScreen>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
+#include <QVBoxLayout>
 
 #include "core/config.h"
 #include "core/image_buffer.h"
@@ -36,6 +42,7 @@
 #include "ui/ocr_runner.h"
 #include "ui/pin_window.h"
 #include "ui/selection_overlay.h"
+#include "ui/single_instance.h"
 
 namespace jie2::ui {
 
@@ -181,6 +188,8 @@ TrayController::TrayController(std::unique_ptr<platform::Platform> platform,
 
 TrayController::~TrayController() {
     saveConfig();
+    // 先停 Wayland 顶部条子进程：避免它在主进程退出后成为孤儿窗口。
+    stopWaylandLine();
     if (platform_) {
         platform_->releaseAllHotkeys();
     }
@@ -193,7 +202,17 @@ bool TrayController::start() {
 
     // 衣架（M3）：只在托盘常驻模式下创建 —— CLI 一次性路径不需要它，
     // 也不该为了它去启动指针轮询。
-    if (clotheslineEnabled_) {
+    //
+    // Wayland 例外（B 项）：Qt 窗口在 Wayland 下不能定位，Qt 衣架的
+    // "贴屏幕顶边"语义无法实现 —— 改走 layer-shell 顶部条（jie2-line
+    // 子进程），数据经 items 文件单向传递。
+    if (clotheslineEnabled_ &&
+        capabilities_.session == core::SessionType::Wayland) {
+        waylandLineEnabled_ = true;
+        qInfo().noquote() << QStringLiteral(
+            "[jie2] Wayland 会话：衣架改用 layer-shell 顶部条（jie2-line）");
+        updateWaylandLine();
+    } else if (clotheslineEnabled_) {
         clothesline_ = new Clothesline();
         // 复制动作由这里执行（而不是衣架窗口自己）—— 写入剪贴板会同步
         // 触发本控制器的剪贴板监听，而监听会重建衣架数据；把写入集中在
@@ -885,10 +904,122 @@ void TrayController::cornerTick() {
 }
 
 void TrayController::refreshClothesline() {
+    // Wayland 会话：数据走 items 文件 → jie2-line（layer-shell 顶部条）。
+    if (waylandLineEnabled_) {
+        updateWaylandLine();
+        return;
+    }
     if (clothesline_ == nullptr) {
         return;
     }
     clothesline_->setEntries(history_.entries());
+}
+
+// ---- Wayland 顶部条（B 项：layer-shell）----
+
+QString TrayController::findLineBinary() {
+    // ① 环境变量覆盖（测试与自定义安装用）。
+    const QByteArray override = qgetenv("JIE2_LINE_PATH");
+    if (!override.isEmpty()) {
+        const QString path = QString::fromLocal8Bit(override);
+        if (QFileInfo::exists(path)) {
+            return path;
+        }
+        qWarning().noquote()
+            << QStringLiteral("[jie2] JIE2_LINE_PATH 指向的文件不存在：%1").arg(path);
+    }
+    // ② 与主程序同目录（安装后的 /usr/bin）。
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QString same = appDir.filePath(QStringLiteral("jie2-line"));
+    if (QFileInfo::exists(same)) {
+        return same;
+    }
+    // ③ 构建树：可执行在 build-*/src/ui/，jie2-line 在 build-*/src/tools/。
+    const QString buildTree =
+        appDir.absoluteFilePath(QStringLiteral("../tools/jie2-line"));
+    if (QFileInfo::exists(buildTree)) {
+        // canonical 化：去掉路径里的 ".."，日志里更干净。
+        const QString canonical = QFileInfo(buildTree).canonicalFilePath();
+        return canonical.isEmpty() ? buildTree : canonical;
+    }
+    // ④ PATH。
+    return QStandardPaths::findExecutable(QStringLiteral("jie2-line"));
+}
+
+void TrayController::updateWaylandLine() {
+    if (!waylandLineEnabled_) {
+        return;
+    }
+    // 1) 写 items 文件（jie2-line 轮询它的 mtime）。
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir().mkpath(dir);
+    const QString itemsPath = dir + QStringLiteral("/line-items.txt");
+    {
+        QFile file(itemsPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                       QIODevice::Text)) {
+            qWarning().noquote() << QStringLiteral(
+                                        "[jie2] Wayland 衣架：items 写入失败 %1")
+                                        .arg(itemsPath);
+            return;
+        }
+        QTextStream out(&file);
+        for (const auto& entry : history_.entries()) {
+            out << QString::fromStdString(entry.path) << '\n';
+        }
+    }
+
+    // 2) 启动 jie2-line（只启动一次；启动失败则明确报告并停用）。
+    if (lineProcess_ != nullptr) {
+        if (lineProcess_->state() != QProcess::NotRunning) {
+            return;  // 已在运行；items 文件变化它会自己重绘
+        }
+        qInfo().noquote() << QStringLiteral("[jie2] Wayland 衣架：子进程已退出"
+                                            "（exitCode=%1），不再重启")
+                                 .arg(lineProcess_->exitCode());
+        waylandLineEnabled_ = false;
+        return;
+    }
+
+    const QString binary = findLineBinary();
+    if (binary.isEmpty()) {
+        qWarning().noquote() << QStringLiteral(
+            "[jie2] Wayland 衣架：找不到 jie2-line（可设环境变量 JIE2_LINE_PATH "
+            "指定路径）；本次降级为不使用顶部条");
+        waylandLineEnabled_ = false;
+        return;
+    }
+    lineProcess_ = new QProcess(this);
+    lineProcess_->setProgram(binary);
+    lineProcess_->setArguments({QStringLiteral("--items"), itemsPath});
+    // 子进程的输出并入主进程日志（便于诊断）。
+    lineProcess_->setProcessChannelMode(QProcess::ForwardedChannels);
+    lineProcess_->start();
+    if (!lineProcess_->waitForStarted(3000)) {
+        qWarning().noquote() << QStringLiteral(
+                                    "[jie2] Wayland 衣架：启动 jie2-line 失败：%1")
+                                    .arg(lineProcess_->errorString());
+        delete lineProcess_;
+        lineProcess_ = nullptr;
+        waylandLineEnabled_ = false;
+        return;
+    }
+    qInfo().noquote() << QStringLiteral("[jie2] Wayland 衣架：已启动 %1（layer-shell 顶部条）")
+                             .arg(binary);
+}
+
+void TrayController::stopWaylandLine() {
+    if (lineProcess_ == nullptr) {
+        return;
+    }
+    lineProcess_->terminate();
+    if (!lineProcess_->waitForFinished(800)) {
+        lineProcess_->kill();
+        lineProcess_->waitForFinished(300);
+    }
+    lineProcess_ = nullptr;
+    waylandLineEnabled_ = false;
 }
 
 // ---- 剪贴板图片监听（M3 增补）----
@@ -1102,6 +1233,120 @@ int TrayController::visiblePinCount() const {
         }
     }
     return count;
+}
+
+int TrayController::currentGroupPinCount() const {
+    int count = 0;
+    for (PinWindow* pin : pins_) {
+        if (pin != nullptr && pin->group() == currentPinGroup_) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int TrayController::emptyCurrentPinGroup() {
+    // 先收集再关闭：close 会触发 closed 信号就地修改 pins_。
+    std::vector<PinWindow*> closing;
+    for (PinWindow* pin : pins_) {
+        if (pin != nullptr && pin->group() == currentPinGroup_) {
+            closing.push_back(pin);
+        }
+    }
+    for (PinWindow* pin : closing) {
+        pin->close();
+    }
+    qInfo().noquote() << QStringLiteral("[jie2] 已清空贴图第 %1 组（%2 张）")
+                             .arg(currentPinGroup_ + 1)
+                             .arg(closing.size());
+    if (!closing.empty()) {
+        note(QStringLiteral("贴图组已清空"),
+             QStringLiteral("第 %1 组关闭了 %2 张")
+                 .arg(currentPinGroup_ + 1)
+                 .arg(closing.size()));
+    }
+    rebuildMenu();
+    return static_cast<int>(closing.size());
+}
+
+void TrayController::showPinGroupManager() {
+    qInfo().noquote() << QStringLiteral("[jie2] 打开贴图分组管理");
+    // 管理对话框放栈上：exec() 期间主事件循环继续运行（嵌套事件循环），
+    // 单实例通道与其它菜单动作不受影响。
+    QDialog dialog;
+    dialog.setWindowTitle(QStringLiteral("截2 · 贴图分组管理"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* hint = new QLabel(
+        QStringLiteral("每个分组是一组贴图；切换后只显示该组。"), &dialog);
+    hint->setStyleSheet(QStringLiteral("color: #888;"));
+    layout->addWidget(hint);
+
+    const int groupCount = std::max(1, pinGroupCount_);
+    for (int group = 0; group < groupCount; ++group) {
+        int count = 0;
+        for (PinWindow* pin : pins_) {
+            if (pin != nullptr && pin->group() == group) {
+                ++count;
+            }
+        }
+        auto* row = new QHBoxLayout();
+        auto* label = new QLabel(
+            QStringLiteral("第 %1 组：%2 张%3")
+                .arg(group + 1)
+                .arg(count)
+                .arg(group == currentPinGroup_ ? QStringLiteral("（当前）")
+                                               : QString()),
+            &dialog);
+        row->addWidget(label, /*stretch=*/1);
+
+        auto* switchButton = new QPushButton(QStringLiteral("切换到该组"), &dialog);
+        switchButton->setEnabled(group != currentPinGroup_);
+        connect(switchButton, &QPushButton::clicked, &dialog,
+                [this, &dialog, group]() {
+                    switchPinGroup(group);
+                    dialog.accept();
+                });
+        row->addWidget(switchButton);
+
+        auto* emptyButton = new QPushButton(QStringLiteral("清空该组"), &dialog);
+        emptyButton->setEnabled(count > 0);
+        connect(emptyButton, &QPushButton::clicked, &dialog,
+                [this, &dialog, group, count]() {
+                    // 清空任意组（不限于当前组）：临时切到该组再清空再切回，
+                    // 复用同一条清空链路；若本来就是当前组则无需切换。
+                    const int previous = currentPinGroup_;
+                    if (previous != group) {
+                        switchPinGroup(group);
+                    }
+                    emptyCurrentPinGroup();
+                    if (previous != group && !pins_.empty()) {
+                        switchPinGroup(previous);
+                    }
+                    dialog.accept();
+                    qInfo().noquote() << QStringLiteral("[jie2] 管理窗口：清空第 %1 组（%2 张）")
+                                             .arg(group + 1)
+                                             .arg(count);
+                });
+        row->addWidget(emptyButton);
+
+        layout->addLayout(row);
+    }
+
+    auto* closeRow = new QHBoxLayout();
+    closeRow->addStretch(1);
+    auto* closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    closeRow->addWidget(closeButton);
+    layout->addLayout(closeRow);
+
+    dialog.exec();
+}
+
+void TrayController::activateExistingInstance() {
+    qInfo().noquote() << QStringLiteral("[jie2] 唤起已有实例");
+    note(QStringLiteral("截2 已在运行"),
+         QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图"));
 }
 
 void TrayController::switchPinGroup(int group) {

@@ -9,10 +9,12 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version" FORCE)
 endif()
 
+# 语言包含 C：jie2-line（Wayland layer-shell 顶部条）需要编译
+# wayland-scanner 生成的 .c 协议代码（interface 表符号）。
 project(jie2
     VERSION 0.1.0
     DESCRIPTION "截2 — 跨平台截图 / 标注 / 贴图工具"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

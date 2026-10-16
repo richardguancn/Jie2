@@ -35,6 +35,10 @@ mkdir -p "$APP_DIR/usr/share/icons/hicolor/256x256/apps"
 
 install -m 0755 "$JIE2_BIN" "$APP_DIR/usr/bin/jie2"
 install -m 0755 "$PROBE_BIN" "$APP_DIR/usr/bin/jie2-probe"
+# jie2-line（Wayland 顶部条）：可选，存在才放入。
+if [ -x "$ROOT/$BUILD_DIR/src/tools/jie2-line" ]; then
+    install -m 0755 "$ROOT/$BUILD_DIR/src/tools/jie2-line" "$APP_DIR/usr/bin/jie2-line"
+fi
 
 cat > "$APP_DIR/jie2.desktop" <<'EOF'
 [Desktop Entry]

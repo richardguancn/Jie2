@@ -10,9 +10,14 @@ add_executable(jie2 WIN32 MACOSX_BUNDLE
     main.cpp
     ocr_runner.cpp
     pin_window.cpp
-    tray.cpp
     selection_overlay.cpp
+    single_instance.cpp
+    tray.cpp
 )
+
+# 注意：Wayland 下衣架不由 Qt 窗口实现，也不在 UI 层做 layer-shell 适配 ——
+# 走独立进程 jie2-line（架构决策见 src/tools/jie2_line.cpp），
+# 本层只通过 tray.cpp 的 updateWaylandLine() 写 items 文件并拉起它。
 
 target_include_directories(jie2 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..

@@ -101,6 +101,8 @@ private:
     QTimer* pollTimer_ = nullptr;
 
     // ---- 滑入滑出动画状态 ----
+    // 动画由"窗口沿屏幕上沿移动"实现（定时器驱动）。
+    // 注：Wayland 下本窗口不创建（走 jie2-line 子进程），故只有这一种形态。
     QTimer* animTimer_ = nullptr;
     int animTargetY_ = 0;
     bool animHideAtEnd_ = false;

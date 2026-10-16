@@ -4,7 +4,7 @@
 
 > 当前状态：**M0–M7 主要功能全部落地**（截图 / 标注 / 衣架 / 贴图 / OCR / 命令行 / 打包）。
 > 功能规划与选型依据见 [《截2-可行性评估报告.md》](截2-可行性评估报告.md)。
-> 剩余细化项（贴图组命令、Windows 平台支持、layer-shell、单实例 IPC）见文末。
+> 全部里程碑功能已完成并验证；剩余为长尾细化项（见文末「剩余细化项」）。
 
 ## 架构：三层解耦
 
@@ -173,6 +173,10 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | **Wayland GlobalShortcuts M7** | — | ✅ **E2E（mock 门户）**：能力探测识别服务（version=2）、绑定成功、Activated 触发回调、触发串 "CTRL+ALT+t" 正确、拒绝场景如实失败；**25 轮连续通过** |
 | **Wayland Screenshot M7** | — | ✅ **E2E（mock 门户 + 像素核对）**：全屏抓取（源图 5 种行滤波轮转、4 点像素核实）、区域裁剪（2 点核实）、越界/取消如实失败；**5 轮连续通过** |
 | **打包 M7** | ✅ **自包含包**：`--bundle-qt` 产出 12MB zip（5 个 Qt 框架 + 9 个插件 + 重签名）；dyld 验证全部从包内加载；GUI 运行正常 | ✅ **双格式**：deb（2.4MB，安装后运行正常）+ AppImage 风格自解压包（3.7MB，GUI 冒烟通过、`--version` 正常） |
+| **单实例 IPC**（唤起/命令送达） | ✅ **E2E**：`--empty-group` 送达执行、二次启动唤起、实例数=1 | ✅ **E2E**：合成热键贴 1 张真实贴图 → 命令清空它 → 二次启动唤起 → 无实例清晰报错 |
+| **layer-shell 顶部条**（Wayland 衣架） | —（macOS 无此概念） | ✅ **五项全过**（Sway 真实合成器）：自动切换 / items 文件 / 无孤儿 / 输出像素（缩略图色值精确）/ 层叠语义（盖住普通窗口） |
+| **贴图分组管理窗口** | — | ✅ `--show-group-manager` 可重复打开（Esc 关闭后主实例存活） |
+| **Windows 后端** | — | ✅ **双工具链**交叉编译（brew GCC 16.2.0/UCRT + Debian GCC 12-posix/msvcrt）+ 导入表检查；运行级验证待 Windows 实机 |
 
 抓屏验证细节：
 
@@ -347,39 +351,67 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
   - Linux 依赖策略：**用发行版自带 Qt**，不捆绑运行时 —— 评估报告 3.1 对
     麒麟/统信等老系统的兼容性要求
 
-剩余细化项（不影响主链路，按需推进）：
+### 功能完成度总览（收口）
 
-- ~~**M4 增补**：贴图分组管理~~ ✅ 已完成（建组/切组/可见性/循环，12 项断言）。
-- **M6 增补**：条码/二维码识别 ✅ 已完成；贴图组命令（`--empty-group` 等）
-  待做 —— 它需要**先有单实例 IPC**：命令要作用于运行中的实例，
-  而当前架构下 CLI 调用是独立进程（见下节大项 A）。
-- **M7 增补**：Wayland portal —— ✅ **GlobalShortcuts（热键）与
-  Screenshot（截图）双门户已完成**；ScreenCast（流式抓屏）经评估不做：
-  一次性截图场景由 Screenshot 门户覆盖，ScreenCast 是持久流方案，
-  留作将来录屏类需求的扩展点。rpm 包 ✅；macOS 安装包 ✅（自包含 .zip）。
-- **M2 增补**：标注二次编辑（撤销到目标图案后重做，手册中的既有交互；
-  Snipaste 手册亦标注为"将来支持"，现有替代 = 撤销/重做栈）。
-- **Wayland 衣架（layer-shell 顶部条）**：待实现。收益范围仅 KDE/wlroots
-  （GNOME 对 layer-shell 与置顶窗都不支持，无解）。需要自绑
-  wlr-layer-shell 协议（Qt6 下无现成库，Debian 的 LayerShellQt 是 Qt5），
-  可在容器内用 Sway headless 做真实合成器验证。
+**全部里程碑的主功能均已完成并验证**。曾经的三个"未开始大项"
+（单实例 IPC / layer-shell 顶部条 / Windows 平台）也已全部落地
+（见下节）。以下只列**真正剩余的长尾细化项**（不影响主链路）：
 
-### 尚未开始的大项
+- **M2 增补**：标注二次编辑（撤销到目标图案后重做）。Snipaste 手册自己
+  也标注为"将来支持"；现有替代 = 撤销/重做栈。
+- **M6 增补**：ScreenCast 流式抓屏 —— 经评估不做：一次性截图由
+  xdg-desktop-portal Screenshot 门户覆盖；ScreenCast 是持久流方案，
+  留作将来录屏类需求的扩展点。
+- **Windows 实机验证**：代码与交叉编译验证已完成；运行级验证需真实
+  Windows 环境（见下节 C）。
+- 小型交互项（按需）：橡皮擦旋转、贴图多选批量操作、主题跟随系统、
+  标注自由选中。
 
-- **A. 单实例 IPC**：让 CLI 命令作用于运行中的实例（`--empty-group`、
-  `--show-group-manager` 与"二次启动唤起主实例"都依赖它）。
-  需要 QLocalServer 命令通道与 main 的启动流程改造。
-- **B. layer-shell 顶部条**（见上）。
-- **C. Windows 平台支持**（现状如实说明）：
-  - 代码现状：`src/platform/` 下**只有 `linux/` 与 `macos/` 两个实现**，
-    Windows 走 `factory.cpp` 的"能力全 Unknown"空实现 —— 即**不能运行**。
-  - 需要的工作：① 新增 `platform/windows/` 实现（Win32：BitBlt/GDI 抓屏、
-    `RegisterHotKey` 全局热键、`SetWindowPos(HWND_TOPMOST)` 置顶窗、
-    剪贴板 DIB 读写）；② Qt6 for Windows 工具链；③ Windows 构建与运行环境。
-  - **为什么没有直接写代码**：当前开发环境（macOS 宿主 + aarch64 Linux
-    容器）没有 Windows 运行/构建链（Qt6 Windows 交叉链 + 运行验证）。
-    在无验证手段的情况下写大段平台代码违背本项目"能验证才声称完成"
-    的原则 —— 该平台应作为独立专项，在具备 Windows 构建环境时开展。
+### 原「三个大项」的最终状态（全部完成）
+
+- **A. 单实例 IPC** ✅ **已完成并验证**。
+  `ui/single_instance.cpp`（QLocalSocket 命令通道）+ main 的启动引导：
+  二次启动唤起已有实例（不再起第二个托盘）；`--empty-group` /
+  `--show-group-manager` 送达运行实例执行；无实例时命令给出明确报错。
+  验证：Linux 版 E2E（合成热键贴 1 张真实贴图 → 命令清空它 → 二次启动唤起
+  → 无实例报错，全程走真实路径）与 macOS 版 E2E（送达/执行/唤起/实例数=1）。
+
+- **B. layer-shell 顶部条（Wayland 衣架）** ✅ **已完成并验证**。
+  - **架构：独立进程** `src/tools/jie2_line.cpp`（纯 wayland-client 渲染器）。
+    关键决策：Qt6 不暴露底层 wl_surface、无法给 Qt 窗口设置 layer 角色
+    （LayerShellQt 只支持 Qt5）—— 所以不碰 Qt 私有 API，而是由主程序把
+    条目写进 items 文件、子进程轮询重绘（数据单向，不引入双向协议复杂度）。
+    主程序在 Wayland 会话下自动切换（`tray.cpp` 的 waylandLineEnabled_ 分支），
+    退出时子进程一并清理（无孤儿）。
+  - 渲染：深色条带 + 晾衣绳 + 卡片缩略图；空态有中线标记。
+  - **验证**（Sway headless 真实合成器 + grim 截图）：
+    ① 日志确认自动切换到 layer-shell；② items 文件 2 行；
+    ③ 子进程运行且退出后无孤儿；④ **合成器输出像素**：截图里两个缩略图
+    颜色与预置 PNG 精确一致（220,40,40 / 40,120,220）；
+    ⑤ **层叠语义**（test-layer-shell-stacking.sh）：top layer 真的盖在
+    普通窗口（白板模式的全屏窗口）之上 —— 顶部是条带、下方是白板底色。
+  - 适用范围如实：wlroots/KDE 支持；GNOME 对该协议无解（协议层面）。
+
+- **C. Windows 平台支持** ✅ **实现完成 + 双工具链交叉编译验证通过**
+  （实机运行验证待真实 Windows 环境，如实标注）。
+  - `src/platform/windows/windows_platform.cpp`（555 行）覆盖同一 Platform 接口：
+    GDI BitBlt 抓屏（虚拟桌面坐标、含负坐标多屏）、EnumDisplayMonitors 显示器枚举
+    （每屏 DPI）、RegisterHotKey 全局热键（专用消息线程 —— 与 X11 后端同一约定，
+    回调由 UI 层投递回主线程）、EnumWindows 窗口几何（供吸附）；
+    OCR 如实报告"系统后端不可用"并指引 tesseract 后端。
+  - **验证**（`scripts/verify-windows-cross.sh`，双工具链）：
+    macOS 宿主 brew mingw GCC 16.2.0（UCRT 运行时）与容器 Debian mingw
+    GCC 12-posix（msvcrt 运行时）均：编译 11 个源文件 → 链接 PE32+ exe →
+    导入表检查（依赖全部为预期系统 DLL、无未解析符号）。
+  - **复核修掉一个隐藏问题**：Debian 的 mingw 默认是 **win32 线程模型**，
+    不支持 std::mutex/thread —— 直接编译 Windows 后端会失败（实测报
+    "std::mutex does not name a type"）。验证脚本现在自动挑选 **posix 变体**，
+    选不到时明确报错（附安装命令），不假装通过。
+  - **运行级验证的环境限制（如实）**：容器是 aarch64，其 wine 也是 aarch64 版，
+    只能加载 aarch64 PE；加载 x86-64 PE 会得到误导性的 "File not found"
+    （实测——看起来像产物坏了，实为架构不匹配）。aarch64 宿主上跑 x86-64 PE
+    需要 x86-64 wine / FEX / box64，本环境不具备。
+    **实机 Windows 验证仍待真实 Windows 环境**。
 
 ### 已修掉的真实缺陷（累计）
 

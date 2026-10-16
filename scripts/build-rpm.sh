@@ -36,6 +36,10 @@ mkdir -p "$WORK/SOURCES/payload"
 
 install -m 0755 "$JIE2_BIN" "$WORK/SOURCES/payload/jie2"
 install -m 0755 "$PROBE_BIN" "$WORK/SOURCES/payload/jie2-probe"
+# jie2-line（Wayland 顶部条）：可选，存在才打包。
+if [ -x "$ROOT/$BUILD_DIR/src/tools/jie2-line" ]; then
+    install -m 0755 "$ROOT/$BUILD_DIR/src/tools/jie2-line" "$WORK/SOURCES/payload/jie2-line"
+fi
 
 # 桌面文件与图标：优先取打包脚本已备好的版本，否则现场生成。
 if [ -f "$ROOT/packaging/jie2.desktop" ]; then

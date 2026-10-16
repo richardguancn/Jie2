@@ -44,6 +44,11 @@ mkdir -p "$STAGE/DEBIAN" \
 # 可执行文件
 install -m 0755 "$BUILD_DIR/src/ui/jie2" "$STAGE/usr/bin/jie2"
 install -m 0755 "$BUILD_DIR/src/tools/jie2-probe" "$STAGE/usr/bin/jie2-probe"
+# jie2-line：Wayland layer-shell 顶部条（衣架的 Wayland 实现）。
+# 可选：某些构建（无 wayland-client）不产出它；存在才装。
+if [ -x "$BUILD_DIR/src/tools/jie2-line" ]; then
+    install -m 0755 "$BUILD_DIR/src/tools/jie2-line" "$STAGE/usr/bin/jie2-line"
+fi
 
 # 桌面入口与图标
 install -m 0644 packaging/jie2.desktop "$STAGE/usr/share/applications/jie2.desktop"

@@ -8,6 +8,8 @@ namespace jie2::platform {
 std::unique_ptr<Platform> createMacPlatform();
 #elif defined(__linux__)
 std::unique_ptr<Platform> createLinuxPlatform();
+#elif defined(_WIN32)
+std::unique_ptr<Platform> createWindowsPlatform();
 #endif
 
 namespace {
@@ -68,6 +70,8 @@ std::unique_ptr<Platform> createPlatform() {
     return createMacPlatform();
 #elif defined(__linux__)
     return createLinuxPlatform();
+#elif defined(_WIN32)
+    return createWindowsPlatform();
 #else
     return std::make_unique<UnsupportedPlatform>();
 #endif
