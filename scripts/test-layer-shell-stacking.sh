@@ -6,8 +6,9 @@
 #      （用 jie2 的白板模式 —— 它是普通 xdg-toplevel，会铺满工作区）
 #   2. 再起 jie2-line（top layer 的条带）
 #   3. grim 截图：
-#        - 顶部 150px 应是条带（深色 + 缩略图）而不是 magenta
-#        - 下方应是 magenta（证明白板窗口确实在、且被压在条带之下）
+#        - 顶部条带区：绳子与缩略图位置是衣架内容（不是 magenta），
+#          空白区透出 magenta（tendedero 透明面板不遮挡下层）
+#        - 下方应是 magenta（证明白板窗口确实在）
 #
 # 这比"能渲染"更强：证明的是 layer 协议里 TOP 层的**堆叠语义**。
 #
@@ -111,24 +112,33 @@ im = Image.open("/tmp/jie2-line-shot.png").convert("RGB")
 w, h = im.size
 print(f"   截图尺寸: {w}x{h}")
 
-# 说明（实测标定）：条带底色是**半透明**的 (26,26,30,230)。
-# 叠在黑色桌面背景上时呈现 (26,26,30) 附近；叠在被 dim 的白板
-# (145,0,145) 上时呈现 (40,26,44) 附近。所以判据不能写死某一色值，
-# 要用"与背景区域的对比 + 不透明缩略图的精确色"组合。
+# 说明：衣架已改为 tendedero 样式 —— **透明面板**，只有绳子、衣夹和
+# 卡片有像素。所以层叠判据改为：
+#   - 面板空白区应透出白板内容（透明 = 不遮挡）；
+#   - 绳子与缩略图的位置上是衣架内容而不是白板（证明 TOP 层生效）。
 
 # ① 中部：白板内容可见（SelectionOverlay 把画面 dim 成 (145,0,145)）
 mid = im.getpixel((w // 2, h // 2))
 print(f"   中部 (640,400): {mid}")
 assert mid == (145, 0, 145), f"FAIL: 白板窗口不可见或色值不符: {mid}"
 
-# ② 顶部条带区：颜色应显著区别于白板区（半透明条带叠上去的证据）
-strip = im.getpixel((700, 30))
-print(f"   顶部条带区 (700,30): {strip}")
-assert sum(strip) < sum(mid) - 100, \
-    f"FAIL: 顶部区域与白板区无区别（条带没盖在上面？）: {strip}"
+# ② 面板空白区：透出白板（透明面板不遮挡下层窗口）
+#    空白点 (400,100)：卡片区 x∈[481,799]、绳区 y≤35 之外。
+blank = im.getpixel((400, 100))
+print(f"   面板空白区 (400,100): {blank}")
+assert blank == (145, 0, 145), f"FAIL: 面板空白区未透出白板: {blank}"
 
-# ③ 缩略图（不透明）：精确色 —— 最强判据，证明条带内容在白板之上
-thumb = im.getpixel((91, 74))
+# ③ 晾衣绳：绳芯是中性灰（中心处高光与灰芯叠印 ≈192，单独灰芯 ≈140），
+#    在白板之上绘制的证据
+rope = im.getpixel((640, 33))
+print(f"   绳芯 (640,33): {rope}")
+assert 90 <= rope[0] <= 210 and abs(rope[0] - rope[1]) < 20 and \
+    abs(rope[1] - rope[2]) < 20, f"FAIL: 绳芯不在顶层: {rope}"
+
+# ④ 缩略图（不透明）：精确色 —— 最强判据
+# tendedero 布局（1280 宽、2 张卡、间距 174 居中）：
+#   卡1（120×80 红）照片 136×91，中心 (553, 87)
+thumb = im.getpixel((553, 87))
 print(f"   条带内缩略图1: {thumb} ← 应为红(220,40,40)")
 assert abs(thumb[0] - 220) < 20 and thumb[1] < 60, "FAIL: 缩略图不在顶层"
 
@@ -138,7 +148,7 @@ PY
 python3 - <<'PY'
 import re
 log = open("/tmp/jie2-line.log", encoding="utf-8").read()
-assert re.search(r"渲染 1280x150，2 张", log), "FAIL: 条带未渲染"
+assert re.search(r"渲染 1280x210，2 张", log), "FAIL: 条带未渲染"
 print("✓ 条带渲染日志正常")
 print("PASS: layer-shell 层叠顺序验证通过")
 PY

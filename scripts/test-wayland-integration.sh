@@ -51,7 +51,7 @@ cat > "$HOME_DIR/.config/jie2/history.txt" <<EOF
 /tmp/hist-1.png|20261016-100000|120|80
 /tmp/hist-2.png|20261016-100001|80|120
 EOF
-# 主题固定深色：本脚本的条带像素断言基于深色背景（sum<150）。
+# 主题固定深色：本脚本的像素断言基于深色主题的卡片玻璃配色。
 # 容器 gsettings 返回 'default'（解析为浅色），不固定主题会让断言
 # 随环境漂移 —— 与 test-clothesline-linux.sh 同样的处置（实测教训）。
 cat > "$HOME_DIR/.config/jie2/jie2.conf" <<EOF
@@ -160,27 +160,39 @@ im = Image.open("/tmp/jie2-line-shot.png").convert("RGB")
 w, h = im.size
 print(f"  截图尺寸: {w}x{h}")
 
+# tendedero 样式布局（1280 宽、2 张卡、间距 174 居中）：
+#   卡1（120×80 红）照片 136×91，中心 (553, 87)
+#   卡2（80×120 蓝）照片 69×104，中心 (727, 93)
 # 缩略图（不透明、色值精确）—— 最强判据
-t1 = im.getpixel((91, 74))
-t2 = im.getpixel((255, 74))
+t1 = im.getpixel((553, 87))
+t2 = im.getpixel((727, 93))
 print(f"  缩略图1: {t1}（期望红 220,40,40）")
 print(f"  缩略图2: {t2}（期望蓝 40,120,220）")
 assert abs(t1[0] - 220) < 30 and t1[1] < 80, "FAIL: 缩略图1缺失"
 assert t2[2] > 150 and t2[0] < 130, "FAIL: 缩略图2缺失"
 
-# 条带背景（半透明叠在桌面背景上）
-bg = im.getpixel((700, 30))
-print(f"  条带背景: {bg}")
-assert sum(bg) < 150, "FAIL: 条带背景缺失"
+# 抛物线晾衣绳：中心 (640,~33) 有绳芯。该处高光（白 45%）与灰芯（140）
+# 叠在同一行 → ≈192；灰芯单独可见处 ≈140。容差 90..210。
+rope = im.getpixel((640, 33))
+print(f"  绳芯 (640,33): {rope}")
+assert 90 <= rope[0] <= 210 and abs(rope[0] - rope[1]) < 20 and \
+    abs(rope[1] - rope[2]) < 20, "FAIL: 晾衣绳未渲染"
 
-# 条带下方应是桌面背景（sway headless 默认是灰色 (63,63,63) —— 实测标定；
-# 判据用"灰阶且与条带区明显不同"，避免绑死具体的合成器默认色）。
+# 透明面板：无绳无卡区域应透出桌面背景
+# （sway headless 默认灰色 (63,63,63) —— 实测标定；判据用灰阶 + 与绳芯的差）。
+# 空白点 (400,100)：卡片区 x∈[481,799]、绳区 y≤35 之外。
+bg = im.getpixel((400, 100))
+print(f"  面板空白区 (400,100): {bg}")
+is_gray = abs(bg[0] - bg[1]) < 6 and abs(bg[1] - bg[2]) < 6
+assert is_gray and bg[0] < 100, f"FAIL: 面板不透明或背景异常: {bg}"
+
+# 条带下方同样是桌面背景（面板透明，上下应一致）。
 below = im.getpixel((700, 400))
 print(f"  条带下方: {below}")
 is_gray = abs(below[0] - below[1]) < 6 and abs(below[1] - below[2]) < 6
 assert is_gray, f"FAIL: 条带下方不是背景: {below}"
-assert abs(sum(below) - sum(bg)) > 60, "FAIL: 条带与下方无区分"
-print("  ✓ layer-shell 条带真实渲染到了合成器输出")
+assert abs(sum(below) - sum(bg)) < 30, "FAIL: 面板上下背景不一致"
+print("  ✓ layer-shell 条带真实渲染到了合成器输出（透明面板 + 绳 + 卡片）")
 PY
 
 echo

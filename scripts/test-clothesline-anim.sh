@@ -50,7 +50,7 @@ echo "历史条数（应 +1）: $(grep -c '|' "$CFG_DIR/history.txt" 2>/dev/null
 echo
 echo "== [2] 滑入动画：指针移到顶边，中途多次采样窗口位置 =="
 xdotool mousemove --sync 640 1
-# 立刻采样（15ms 步进下，150px 应该在 ~10 步 ≈ 120ms 内完成）
+# 立刻采样（12ms 步进 × 14px 下，210px 应该在 ~15 步 ≈ 180ms 内完成）
 for i in 1 2 3; do
     sleep 0.03
     # 用 probe 抓全屏，检查顶部条带是否部分可见（用像素统计太慢；改用日志）
@@ -59,11 +59,11 @@ done
 sleep 1.0
 
 echo "== [3] 拖出：按住卡片 1 拖动 =="
-# 卡片 1 中心：x = 16 + 75 = 91, y = 22 + 52 = 74
-xdotool mousemove --sync 91 74 sleep 0.2
+# tendedero 样式布局（居中排布，2 张卡）：卡 1（64×64）中心 ≈ (553, 93)
+xdotool mousemove --sync 553 93 sleep 0.2
 xdotool mousedown 1 sleep 0.1
 # 移动超过阈值，启动 QDrag
-xdotool mousemove --sync 300 74 sleep 0.1
+xdotool mousemove --sync 400 93 sleep 0.1
 xdotool mousemove --sync 500 300 sleep 0.2
 # 释放：无接收者 → IgnoreAction
 xdotool mouseup 1 sleep 0.5

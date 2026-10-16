@@ -1,6 +1,7 @@
 #include "ui/clothesline.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QApplication>
 #include <QClipboard>
@@ -10,6 +11,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QLinearGradient>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
@@ -22,9 +24,24 @@ namespace jie2::ui {
 
 namespace {
 
-// 条带配色已改为按主题解析（Clothesline::StripColors，v2.6）——
-// 深浅两套在此定义默认值；kAccent 作为强调色深浅通用。
-const QColor kAccent(64, 158, 255);
+/// 由路径哈希推出固定倾斜角（度，[-2.5, 2.5] —— tendedero 的取值范围）。
+/// tendedero 是创建时随机一次；用哈希让同一文件每次挂载角度一致，
+/// 重绘与测试都确定。
+double tiltForPath(const std::string& path) {
+    quint32 hash = 0;
+    for (const char c : path) {
+        hash = hash * 31 + static_cast<quint8>(c);
+    }
+    return static_cast<double>(hash % 501) / 100.0 - 2.5;
+}
+
+/// 绳子端头淡出：0.08..0.92 区间内完整，两端线性降到透明
+/// （tendedero 的 mask："仿佛从屏幕外延伸过来"）。
+QGradientStops ropeFade(const QColor& color) {
+    QColor transparent = color;
+    transparent.setAlpha(0);
+    return {{0.0, transparent}, {0.08, color}, {0.92, color}, {1.0, transparent}};
+}
 
 } // namespace
 
@@ -34,6 +51,9 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
                    Qt::WindowStaysOnTopHint | Qt::Tool |
                    Qt::NoDropShadowWindowHint);
     setAttribute(Qt::WA_ShowWithoutActivating, true);
+    // 透明面板（tendedero 形态）：只有绳子、衣夹和卡片可见，
+    // 桌面壁纸从面板其余区域透出来。
+    setAttribute(Qt::WA_TranslucentBackground, true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
 
@@ -73,13 +93,11 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
 void Clothesline::setDarkTheme(bool dark) {
     darkTheme_ = dark;
     if (dark) {
-        colors_ = StripColors{QColor(26, 26, 30, 242), QColor(150, 150, 160),
-                              QColor(40, 40, 46), QColor(58, 58, 66),
-                              QColor(200, 200, 205), QColor(150, 150, 155)};
+        colors_ = StripColors{QColor(30, 30, 36, 150), QColor(40, 40, 46, 150),
+                              QColor(225, 225, 232), QColor(170, 170, 178)};
     } else {
-        colors_ = StripColors{QColor(246, 246, 250, 245), QColor(120, 120, 132),
-                              QColor(226, 228, 234), QColor(206, 210, 220),
-                              QColor(60, 62, 70), QColor(120, 122, 132)};
+        colors_ = StripColors{QColor(245, 246, 251, 165), QColor(250, 250, 253, 165),
+                              QColor(52, 54, 62), QColor(96, 98, 108)};
     }
     update();
 }
@@ -91,6 +109,7 @@ void Clothesline::setEntries(std::vector<core::HistoryEntry> entries) {
     for (int i = start; i < static_cast<int>(entries.size()); ++i) {
         Item item;
         item.entry = entries[static_cast<std::size_t>(i)];
+        item.tilt = tiltForPath(item.entry.path);
         entries_.push_back(std::move(item));
     }
     // 容器被重建：所有基于旧索引的交互状态必须失效。
@@ -108,9 +127,9 @@ void Clothesline::reloadThumbnails() {
         if (item.thumbnail.isNull() && !item.entry.path.empty()) {
             QImage image(QString::fromStdString(item.entry.path));
             if (!image.isNull()) {
-                // 控制内存：缩略图不超过卡片尺寸的 2 倍。
+                // 控制内存：缩略图不超过照片区尺寸的 2 倍。
                 item.thumbnail =
-                    image.scaled(kCardWidth * 2, kCardHeight * 2,
+                    image.scaled(kPhotoMaxWidth * 2, kPhotoMaxHeight * 2,
                                  Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
         }
@@ -124,21 +143,69 @@ void Clothesline::setWatchEnabled(bool enabled) {
     }
 }
 
-QRect Clothesline::ropeRect() const {
-    // 绳子在条带顶部往下 14pt 处。
-    return QRect(0, 14, width(), 2);
+// ---- 布局（tendedero LineView.Layout 的移植）----
+
+double Clothesline::ropeSag() const {
+    return std::min(30.0, width() * 0.018);
 }
 
-QRect Clothesline::itemRect(int index) const {
-    // 卡片从左侧排起（新的在右）。
-    const int x = 16 + index * (kCardWidth + kCardGap);
-    const int y = 22;
-    return QRect(x, y, kCardWidth, kCardHeight);
+double Clothesline::ropeYAt(double x) const {
+    if (width() <= 0) {
+        return kRopeTop;
+    }
+    const double f = x / width();
+    return kRopeTop + 4.0 * ropeSag() * f * (1.0 - f);
+}
+
+double Clothesline::cardCenterX(int index) const {
+    // 卡片居中排布；张数超出可用宽度时间距压缩，保证两端不出屏
+    // （tendedero 的 "move closer together so none is past the edge"）。
+    const int count = static_cast<int>(entries_.size());
+    const int gaps = std::max(count - 1, 0);
+    const double step =
+        gaps > 0 ? std::min(static_cast<double>(kCardSpacing),
+                            std::max(0, width() - 200) / static_cast<double>(gaps))
+                 : kCardSpacing;
+    return width() / 2.0 - gaps * step / 2.0 + index * step;
+}
+
+QSizeF Clothesline::photoSize(int index) const {
+    // 照片等比适配进 136×104，玻璃边框贴着照片（tendedero：
+    // "the white border hugs it whether the screenshot is wide or tall"）。
+    const Item& item = entries_[static_cast<std::size_t>(index)];
+    const QSizeF source = item.thumbnail.isNull()
+                              ? QSizeF(kPhotoMaxWidth, kPhotoMaxHeight)
+                              : QSizeF(item.thumbnail.size());
+    return source.scaled(QSizeF(kPhotoMaxWidth, kPhotoMaxHeight),
+                         Qt::KeepAspectRatio);
+}
+
+QPointF Clothesline::cardAnchor(int index) const {
+    // 悬挂点 = 衣夹顶中 = 绳子上方 kPinAbove 处。倾斜旋转以此点为锚
+    // （tendedero：rotationEffect(anchor: .top)）。
+    const double cx = cardCenterX(index);
+    return QPointF(cx, ropeYAt(cx) - kPinAbove);
+}
+
+QRectF Clothesline::cardRectF(int index) const {
+    const double cx = cardCenterX(index);
+    const double top = ropeYAt(cx) - kPinAbove + kCardBelowClipTop;
+    const QSizeF photo = photoSize(index);
+    return QRectF(cx - (photo.width() + kFrameInset * 2) / 2.0, top,
+                  photo.width() + kFrameInset * 2,
+                  photo.height() + kFrameInset * 2);
 }
 
 int Clothesline::itemAt(const QPoint& pos) const {
     for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-        if (itemRect(i).contains(pos)) {
+        const Item& item = entries_[static_cast<std::size_t>(i)];
+        const QPointF anchor = cardAnchor(i);
+        // 逆旋转回正后再做矩形包含判定（卡片是斜挂着的）。
+        QTransform transform;
+        transform.translate(anchor.x(), anchor.y());
+        transform.rotate(item.tilt);
+        transform.translate(-anchor.x(), -anchor.y());
+        if (cardRectF(i).contains(transform.inverted().map(QPointF(pos)))) {
             return i;
         }
     }
@@ -213,7 +280,7 @@ void Clothesline::reveal(const QRect& area) {
     }
     revealed_ = true;
     // 起始位置在屏幕上方（不可见），动画滑入到 area.top()。
-    setGeometry(area.left(), area.top() - kStripHeight, area.width(), kStripHeight);
+    setGeometry(area.left(), area.top() - kPanelHeight, area.width(), kPanelHeight);
     show();
     raise();
     animateTo(area.top(), /*hideAtEnd=*/false);
@@ -233,7 +300,7 @@ void Clothesline::conceal() {
     }
     revealed_ = false;
     // 滑出动画结束时才 hide()（否则动画看不见）。
-    animateTo(panelScreenArea().top() - kStripHeight, /*hideAtEnd=*/true);
+    animateTo(panelScreenArea().top() - kPanelHeight, /*hideAtEnd=*/true);
     qInfo().noquote() << QStringLiteral("[jie2] 衣架收起");
 }
 
@@ -246,68 +313,184 @@ void Clothesline::hideNow() {
     hide();
 }
 
+// ---- 绘制（tendedero 样式：抛物线绳 + 铝质衣夹 + 玻璃卡片 + 倾斜）----
+
+void Clothesline::drawRope(QPainter& painter) const {
+    // 抛物线：两端在 ropeTop，中心下垂 sag。二次贝塞尔的控制点在
+    // (中点, ropeTop + 2·sag) 时曲线恰好是这条抛物线。
+    QPainterPath path;
+    path.moveTo(-20, kRopeTop);
+    path.quadTo(QPointF(width() / 2.0, kRopeTop + 2.0 * ropeSag()),
+                QPointF(width() + 20, kRopeTop));
+
+    // 三层描边（tendedero Rope）：柔和投影 + 中性灰芯 + 顶部高光，
+    // 深浅壁纸上都可读。两端淡出用画笔画刷上的水平渐变实现。
+    const auto stroke = [&](const QColor& color, double width_, double dy) {
+        QLinearGradient fade(0, 0, width(), 0);
+        fade.setStops(ropeFade(color));
+        painter.save();
+        painter.translate(0, dy);
+        painter.setPen(QPen(QBrush(fade), width_));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+        painter.restore();
+    };
+    stroke(QColor(0, 0, 0, 56), 1.4, 1.2);       // 投影（黑色 22%）
+    stroke(QColor(140, 140, 140), 1.2, 0);       // 灰芯（white 0.55）
+    stroke(QColor(255, 255, 255, 115), 0.4, -0.35);  // 高光（白色 45%）
+}
+
+void Clothesline::drawClothespin(QPainter& painter,
+                                 const QPointF& topCenter) const {
+    // 铝质衣夹（tendedero Clothespin）：9×26 拉丝金属胶囊，
+    // 绳子从 8.5pt 处的槽里穿过。
+    const QRectF body(topCenter.x() - kClipWidth / 2, topCenter.y(),
+                    kClipWidth, kClipHeight);
+
+    // 柔和投影（黑色 30%，半径 2，下移 1.5 —— 无模糊API，用偏移近似）
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 50));
+    painter.drawRoundedRect(body.translated(0, 1.5), 3.5, 3.5);
+
+    // 拉丝金属：水平渐变（亮斑偏左）
+    QLinearGradient metal(body.left(), 0, body.right(), 0);
+    metal.setColorAt(0.0, QColor(179, 179, 179));
+    metal.setColorAt(0.35, QColor(237, 237, 237));
+    metal.setColorAt(0.65, QColor(209, 209, 209));
+    metal.setColorAt(1.0, QColor(158, 158, 158));
+    painter.setBrush(metal);
+    painter.drawRoundedRect(body, 3.5, 3.5);
+
+    // 描边：顶部受光（白 90% → 黑 18% 纵向渐变）
+    QLinearGradient edge(0, body.top(), 0, body.bottom());
+    edge.setColorAt(0.0, QColor(255, 255, 255, 230));
+    edge.setColorAt(1.0, QColor(0, 0, 0, 46));
+    painter.setPen(QPen(QBrush(edge), 0.6));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(body, 3.5, 3.5);
+
+    // 绳槽
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 82));
+    painter.drawRoundedRect(
+        QRectF(topCenter.x() - 2.5, topCenter.y() + 8.5, 5, 1.4), 0.7, 0.7);
+}
+
+void Clothesline::drawCardBody(QPainter& painter, int index) const {
+    const Item& item = entries_[static_cast<std::size_t>(index)];
+    const QRectF card = cardRectF(index);
+    const QRectF photo = card.adjusted(kFrameInset, kFrameInset,
+                                       -kFrameInset, -kFrameInset);
+    const bool hovered = (index == hoverIndex_);
+
+    // 投影（无模糊 API，用三层渐淡的偏移圆角矩形近似柔和阴影；
+    // 参数对齐 tendedero：黑 18%、半径 10、下移 5；悬停 26%/14/8）
+    const double shadowY = hovered ? 8.0 : 5.0;
+    const int shadowAlpha = hovered ? 66 : 46;
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, shadowAlpha / 3));
+    painter.drawRoundedRect(card.adjusted(-4, -4, 4, 4).translated(0, shadowY + 2),
+                            kFrameRadius + 4, kFrameRadius + 4);
+    painter.setBrush(QColor(0, 0, 0, shadowAlpha / 2));
+    painter.drawRoundedRect(card.adjusted(-2, -2, 2, 2).translated(0, shadowY + 1),
+                            kFrameRadius + 2, kFrameRadius + 2);
+    painter.setBrush(QColor(0, 0, 0, shadowAlpha));
+    painter.drawRoundedRect(card.translated(0, shadowY), kFrameRadius,
+                            kFrameRadius);
+
+    // 玻璃底（ultraThinMaterial 的近似：半透明主题色）
+    painter.setBrush(colors_.cardGlass);
+    painter.drawRoundedRect(card, kFrameRadius, kFrameRadius);
+
+    // 玻璃描边：顶部受光的纵向渐变（白 55% → 白 12%）
+    QLinearGradient specular(0, card.top(), 0, card.bottom());
+    specular.setColorAt(0.0, QColor(255, 255, 255, 140));
+    specular.setColorAt(1.0, QColor(255, 255, 255, 31));
+    painter.setPen(QPen(QBrush(specular), 0.75));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(card, kFrameRadius, kFrameRadius);
+    // 外侧细暗边（黑 10%）
+    painter.setPen(QPen(QColor(0, 0, 0, 26), 0.5));
+    painter.drawRoundedRect(card.adjusted(-0.5, -0.5, 0.5, 0.5),
+                            kFrameRadius + 0.5, kFrameRadius + 0.5);
+
+    // 照片（同心圆角：半径 = 边框半径 - 边框厚度）
+    painter.setPen(Qt::NoPen);
+    if (!item.thumbnail.isNull()) {
+        painter.save();
+        QPainterPath clip;
+        clip.addRoundedRect(photo, kPhotoRadius, kPhotoRadius);
+        painter.setClipPath(clip);
+        painter.drawImage(photo, item.thumbnail);
+        painter.restore();
+        // 照片内缘描边（白 18%）
+        painter.setPen(QPen(QColor(255, 255, 255, 46), 0.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(photo, kPhotoRadius, kPhotoRadius);
+    } else {
+        painter.setPen(colors_.failText);
+        painter.drawText(photo, Qt::AlignCenter, QStringLiteral("读取失败"));
+    }
+}
+
+void Clothesline::drawEmptyHint(QPainter& painter) const {
+    // 空态提示：绳子中点下方的胶囊气泡（tendedero 的 Hint）。
+    const QString text =
+        QStringLiteral("截一张图，它会立刻挂在这里");
+    painter.setFont(QFont(QString(), 12));
+    const QRectF textBounds = painter.fontMetrics().boundingRect(text);
+    const QRectF capsule(0, 0, textBounds.width() + 24, textBounds.height() + 12);
+    const double cx = width() / 2.0;
+    const QRectF placed(cx - capsule.width() / 2,
+                        ropeYAt(cx) + 34 - capsule.height() / 2,
+                        capsule.width(), capsule.height());
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(colors_.hintBg);
+    painter.drawRoundedRect(placed, placed.height() / 2, placed.height() / 2);
+    painter.setPen(colors_.hintText);
+    painter.drawText(placed, Qt::AlignCenter, text);
+}
+
 void Clothesline::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    // 底板
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(colors_.stripBg);
-    painter.drawRect(rect());
-
-    // 晾衣绳
-    painter.setPen(QPen(colors_.rope, 2));
-    painter.drawLine(ropeRect().topLeft(), ropeRect().topRight());
+    // 无底板：面板透明，只画绳子、衣夹与卡片（tendedero 形态）。
+    drawRope(painter);
 
     if (entries_.empty()) {
-        painter.setPen(colors_.emptyText);
-        painter.setFont(QFont(QString(), 12));
-        painter.drawText(rect().adjusted(0, 40, 0, 0), Qt::AlignHCenter | Qt::AlignTop,
-                         QStringLiteral("衣架还空着 —— 截一张图，它会立刻挂在这里"));
+        drawEmptyHint(painter);
         return;
     }
 
     for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-        const QRect card = itemRect(i);
+        const Item& item = entries_[static_cast<std::size_t>(i)];
+        const QPointF anchor = cardAnchor(i);
 
-        // 挂线（从绳子到卡片）
-        painter.setPen(QPen(colors_.rope, 1));
-        painter.drawLine(QPoint(card.center().x(), ropeRect().bottom()),
-                         QPoint(card.center().x(), card.top()));
+        painter.save();
+        // 整张悬挂单元（衣夹 + 卡片）绕悬挂点倾斜。
+        painter.translate(anchor);
+        painter.rotate(item.tilt);
+        painter.translate(-anchor);
 
-        // 卡片底
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(i == hoverIndex_ ? colors_.cardHover : colors_.cardBg);
-        painter.drawRoundedRect(card, 8, 8);
+        drawClothespin(painter, anchor);
 
-        // 缩略图（等比适配，居中）
-        Item& item = entries_[static_cast<std::size_t>(i)];
-        if (!item.thumbnail.isNull()) {
-            const QSizeF scaled = QSizeF(item.thumbnail.size())
-                                      .scaled(QSizeF(card.width() - 12,
-                                                     card.height() - 12),
-                                              Qt::KeepAspectRatio);
-            const QRectF target(card.center().x() - scaled.width() / 2,
-                                card.center().y() - scaled.height() / 2,
-                                scaled.width(), scaled.height());
-            painter.setClipPath([&] {
-                QPainterPath path;
-                path.addRoundedRect(target, 4, 4);
-                return path;
-            }());
-            painter.drawImage(target, item.thumbnail);
-            painter.setClipping(false);
-        } else {
-            painter.setPen(colors_.failText);
-            painter.drawText(card, Qt::AlignCenter, QStringLiteral("读取失败"));
-        }
+        // 悬停放大 / 按压缩小以卡顶中心为锚（tendedero 的
+        // scaleEffect(anchor: .top) 只作用于卡片，不含衣夹）。
+        const bool pressed = pressedOnCard_ && pressedIndex_ == i;
+        const double scale =
+            pressed ? 0.95 : (i == hoverIndex_ ? 1.035 : 1.0);
+        painter.save();
+        const QRectF card = cardRectF(i);
+        const QPointF cardTop(card.center().x(), card.top());
+        painter.translate(cardTop);
+        painter.scale(scale, scale);
+        painter.translate(-cardTop);
+        drawCardBody(painter, i);
+        painter.restore();
 
-        // 悬停时画描边
-        if (i == hoverIndex_) {
-            painter.setPen(QPen(kAccent, 2));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(card.adjusted(-1, -1, 1, 1), 9, 9);
-        }
+        painter.restore();
     }
 }
 
@@ -331,6 +514,7 @@ void Clothesline::mousePressEvent(QMouseEvent* event) {
         pressedOnCard_ = true;
         pressPos_ = event->pos();
         pressedIndex_ = index;
+        update();  // 按压缩小 0.95（tendedero 的长按蓄力感）
         return;
     }
     conceal();
@@ -406,6 +590,7 @@ void Clothesline::mouseMoveEvent(QMouseEvent* event) {
         const int index = pressedIndex_;
         pressedOnCard_ = false;
         pressedIndex_ = -1;
+        update();  // 撤销按压缩放
         startDragOut(index);
         return;
     }
@@ -428,6 +613,7 @@ void Clothesline::mouseReleaseEvent(QMouseEvent* event) {
     const int index = pressedIndex_;
     pressedOnCard_ = false;
     pressedIndex_ = -1;
+    update();  // 撤销按压缩放
     if (index < 0 || index >= static_cast<int>(entries_.size())) {
         return;
     }

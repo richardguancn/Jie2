@@ -16,16 +16,18 @@
 //   jie2-line [--items FILE] [--height N] [--timeout-ms N] [--once]
 //     --items FILE      条目文件（每行一个 PNG 路径）；默认
 //                       $XDG_CONFIG_HOME/jie2/line-items.txt
-//     --height N        条带高度（默认 150，与 Qt 衣架一致）
+//     --height N        条带高度（默认 210，与 Qt 衣架一致）
 //     --timeout-ms N    运行 N 毫秒后自动退出（0 = 常驻；测试用）
 //     --once            渲染一帧后退出（CI 用）
 //
-// 渲染内容：深色条带 + 顶部"晾衣绳" + 每张图的缩略图卡片。
+// 渲染内容（tendedero 样式，与 Qt 衣架一致）：透明面板 + 抛物线晾衣绳
+// （两端淡出）+ 铝质衣夹 + 带玻璃边框与固定倾斜角的缩略图卡片。
 
 #include <wayland-client.h>
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -47,35 +49,37 @@ namespace {
 
 namespace core = jie2::core;
 
-// ---- 视觉参数（与 Qt 衣架一致，便于对照）----
-constexpr int kStripHeightDefault = 150;
-constexpr int kCardWidth = 150;
-constexpr int kCardHeight = 104;
-constexpr int kCardGap = 14;
-constexpr int kMarginLeft = 16;
-constexpr int kRopeY = 14;
+// ---- 视觉参数（与 Qt 衣架一致，全部对齐 tendedero 的 LineView/PeggedView）----
+constexpr int kStripHeightDefault = 210;  // photoMaxHeight + 106
+constexpr int kPhotoMaxWidth = 136;       // cardWidth(150) - 14
+constexpr int kPhotoMaxHeight = 104;
+constexpr int kCardSpacing = 174;         // cardWidth + 24
+constexpr double kRopeTop = 10;
+constexpr double kPinAbove = 9.5;         // 衣夹顶高出绳子的距离
+constexpr double kClipWidth = 9;
+constexpr double kClipHeight = 26;
+constexpr double kCardBelowClipTop = 14;  // 衣夹与卡片重叠 12
+constexpr int kFrameInset = 4;            // 玻璃边框厚度
+constexpr double kFrameRadius = 16;
+constexpr double kPhotoRadius = 12;       // 同心圆角：16 - 4
 
 // 主题（v2.6：主题色跟随系统主题）——
 // 主进程解析主题后通过环境变量 JIE2_THEME=dark|light 传给本进程；
 // 未设置时保持既有深色观感。
+// tendedero 的绳子与衣夹是中性色（深浅壁纸通用），主题只体现在
+// 卡片玻璃底与空态标记上（ARGB）。
 struct Palette {
-    std::uint32_t bg;
-    std::uint32_t rope;
-    std::uint32_t cardBg;
+    std::uint32_t cardGlass;
     std::uint32_t emptyMark;
 };
 
 constexpr Palette kDarkPalette{
-    0xE61A1A1E,   // (26,26,30,230)
-    0xFF9696A0,   // (150,150,160,255)
-    0xFF28282E,   // (40,40,46,255)
-    0xFF78787E,
+    0x961E1E24,   // (30,30,36,150)
+    0x9628282E,   // (40,40,46,150)
 };
 constexpr Palette kLightPalette{
-    0xF5F6F6FA,   // (246,246,250,245)
-    0xFF787884,   // (120,120,132,255)
-    0xFFE2E4EA,   // (226,228,234,255)
-    0xFF3C3E46,   // (60,62,70,255)
+    0xA5F5F6FB,   // (245,246,251,165)
+    0xA5FAFAFD,   // (250,250,253,165)
 };
 
 const Palette* gPalette = &kDarkPalette;
@@ -221,38 +225,268 @@ wl_buffer* createBuffer(WlState* state, int width, int height, void** dataOut,
     return buffer;
 }
 
-// ---- 绘制辅助 ----
-inline void putPixel(std::uint32_t* pixels, int width, int x, int y,
-                     std::uint32_t color) {
-    if (x < 0 || y < 0 || x >= width) {
+// ---- 绘制辅助（透明底 + 逐像素 src-over）----
+
+/// 逐像素 src-over 混合（面板是透明底，alpha 必须正确累积）。
+/// 颜色参数：sr/sg/sb ∈ [0,255]，sa ∈ [0,1]。
+void blendPixel(std::uint32_t* pixels, int width, int height, int x, int y,
+                double sr, double sg, double sb, double sa) {
+    if (sa <= 0.0 || x < 0 || y < 0 || x >= width || y >= height) {
         return;
     }
-    pixels[static_cast<std::size_t>(y) * width + x] = color;
+    std::uint32_t* dst = &pixels[static_cast<std::size_t>(y) * width + x];
+    const double da = ((*dst >> 24) & 0xFF) / 255.0;
+    const double dr = (*dst >> 16) & 0xFF;
+    const double dg = (*dst >> 8) & 0xFF;
+    const double db = *dst & 0xFF;
+    const double oa = sa + da * (1.0 - sa);
+    if (oa <= 0.0) {
+        *dst = 0;
+        return;
+    }
+    const double orr = (sr * sa + dr * da * (1.0 - sa)) / oa;
+    const double org = (sg * sa + dg * da * (1.0 - sa)) / oa;
+    const double orb = (sb * sa + db * da * (1.0 - sa)) / oa;
+    *dst = (static_cast<std::uint32_t>(oa * 255.0 + 0.5) << 24) |
+           (static_cast<std::uint32_t>(orr + 0.5) << 16) |
+           (static_cast<std::uint32_t>(org + 0.5) << 8) |
+           static_cast<std::uint32_t>(orb + 0.5);
 }
 
-/// 把图像以 "src over dst" 合成到目标缓冲（忽略目标 alpha 的简化混合，
-/// 适用于"不透明底 + 可能带透明度的缩略图"这个场景）。
-void blendImage(std::uint32_t* pixels, int bufferWidth, int originX,
-                int originY, const core::ImageBuffer& image) {
-    for (int y = 0; y < image.height(); ++y) {
-        for (int x = 0; x < image.width(); ++x) {
-            const core::Rgba src = image.pixel(x, y);
-            const int dx = originX + x;
-            const int dy = originY + y;
-            if (dx < 0 || dy < 0 || dx >= bufferWidth) {
+/// 圆角矩形的有符号距离（负值在内部）。
+double roundedRectSdf(double px, double py, double x, double y, double w,
+                      double h, double radius) {
+    const double qx = std::fabs(px - (x + w / 2)) - (w / 2 - radius);
+    const double qy = std::fabs(py - (y + h / 2)) - (h / 2 - radius);
+    const double ax = std::max(qx, 0.0);
+    const double ay = std::max(qy, 0.0);
+    return std::sqrt(ax * ax + ay * ay) + std::min(std::max(qx, qy), 0.0) -
+           radius;
+}
+
+/// 填充圆角矩形（1px 抗锯齿边缘）。
+void fillRounded(std::uint32_t* buf, int bw, int bh, double x, double y,
+                 double w, double h, double radius, double r, double g,
+                 double b, double a) {
+    const int x0 = std::max(0, static_cast<int>(std::floor(x - 1)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(y - 1)));
+    const int x1 = std::min(bw, static_cast<int>(std::ceil(x + w + 1)));
+    const int y1 = std::min(bh, static_cast<int>(std::ceil(y + h + 1)));
+    for (int py = y0; py < y1; ++py) {
+        for (int px = x0; px < x1; ++px) {
+            const double d =
+                roundedRectSdf(px + 0.5, py + 0.5, x, y, w, h, radius);
+            const double coverage =
+                std::clamp(0.5 - d, 0.0, 1.0);
+            if (coverage > 0.0) {
+                blendPixel(buf, bw, bh, px, py, r, g, b, a * coverage);
+            }
+        }
+    }
+}
+
+/// 描边圆角矩形：t ∈ [0,1] 沿纵向渐变（顶部受光），线宽 width。
+void strokeRoundedV(std::uint32_t* buf, int bw, int bh, double x, double y,
+                    double w, double h, double radius, double width,
+                    double r0, double g0, double b0, double a0, double a1) {
+    const int x0 = std::max(0, static_cast<int>(std::floor(x - width - 1)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(y - width - 1)));
+    const int x1 =
+        std::min(bw, static_cast<int>(std::ceil(x + w + width + 1)));
+    const int y1 =
+        std::min(bh, static_cast<int>(std::ceil(y + h + width + 1)));
+    for (int py = y0; py < y1; ++py) {
+        const double t = h > 0 ? (py - y) / h : 0.0;
+        const double alpha = a0 + (a1 - a0) * t;
+        for (int px = x0; px < x1; ++px) {
+            const double d = std::fabs(
+                roundedRectSdf(px + 0.5, py + 0.5, x, y, w, h, radius));
+            const double coverage = std::clamp(width / 2 + 0.5 - d, 0.0, 1.0);
+            if (coverage > 0.0) {
+                blendPixel(buf, bw, bh, px, py, r0, g0, b0,
+                           alpha * coverage);
+            }
+        }
+    }
+}
+
+/// 由路径哈希推出固定倾斜角（度，[-2.5, 2.5]），与 Qt 衣架同一公式。
+double tiltForPath(const std::string& path) {
+    std::uint32_t hash = 0;
+    for (const char c : path) {
+        hash = hash * 31 + static_cast<std::uint8_t>(c);
+    }
+    return static_cast<double>(hash % 501) / 100.0 - 2.5;
+}
+
+/// 晾衣绳抛物线 y（tendedero：ropeTop + 4·sag·f·(1-f)）。
+double ropeYAt(double x, int width) {
+    const double sag = std::min(30.0, width * 0.018);
+    const double f = x / width;
+    return kRopeTop + 4.0 * sag * f * (1.0 - f);
+}
+
+/// 画晾衣绳：三层描边（投影 + 中性灰芯 + 顶部高光），两端淡出。
+void drawRope(std::uint32_t* pixels, int width, int height) {
+    for (int x = -20; x < width + 20; ++x) {
+        const double y = ropeYAt(x, width);
+        // 端头淡出：0.08..0.92 内完整，之外线性到透明。
+        const double fadeIn = std::clamp(x / (0.08 * width), 0.0, 1.0);
+        const double fadeOut =
+            std::clamp((width - x) / (0.08 * width), 0.0, 1.0);
+        const double fade = fadeIn * fadeOut;
+        blendPixel(pixels, width, height, x,
+                   static_cast<int>(std::lround(y + 1.2)), 0, 0, 0,
+                   0.22 * fade);
+        blendPixel(pixels, width, height, x,
+                   static_cast<int>(std::lround(y)), 140, 140, 140, fade);
+        blendPixel(pixels, width, height, x,
+                   static_cast<int>(std::lround(y - 0.35)), 255, 255, 255,
+                   0.45 * fade);
+    }
+}
+
+/// 把一张卡片（影子 + 玻璃边框 + 照片 + 衣夹）绘制到局部缓冲，
+/// 再按倾斜角旋转贴到面板上。锚点 = 衣夹顶中（局部坐标 (w/2, 0)）。
+void drawCard(std::uint32_t* pixels, int width, int height, double centerX,
+              const core::ImageBuffer& image, double tilt) {
+    // 照片等比适配进 136×104，玻璃边框贴着照片。
+    const double scale =
+        std::min(static_cast<double>(kPhotoMaxWidth) / image.width(),
+                 static_cast<double>(kPhotoMaxHeight) / image.height());
+    const int photoW =
+        std::max(1, static_cast<int>(std::lround(image.width() * scale)));
+    const int photoH =
+        std::max(1, static_cast<int>(std::lround(image.height() * scale)));
+    const double cardW = photoW + kFrameInset * 2;
+    const double cardH = photoH + kFrameInset * 2;
+
+    // 局部缓冲：含上方衣夹（26pt）与四周阴影/旋转余量。
+    const int bw = static_cast<int>(std::ceil(cardW)) + 64;
+    const int bh = static_cast<int>(std::ceil(kCardBelowClipTop + cardH)) + 48;
+    std::vector<std::uint32_t> local(static_cast<std::size_t>(bw) * bh, 0);
+    const double cardX = bw / 2.0 - cardW / 2;
+    const double cardY = kCardBelowClipTop;
+
+    const double ga = ((gPalette->cardGlass >> 24) & 0xFF) / 255.0;
+    const double gr = (gPalette->cardGlass >> 16) & 0xFF;
+    const double gg = (gPalette->cardGlass >> 8) & 0xFF;
+    const double gb = gPalette->cardGlass & 0xFF;
+
+    // 投影（三层渐淡偏移，近似柔和阴影：黑 18%、下移 5）
+    fillRounded(local.data(), bw, bh, cardX - 4, cardY + 7, cardW + 8,
+                cardH + 8, kFrameRadius + 4, 0, 0, 0, 0.06);
+    fillRounded(local.data(), bw, bh, cardX - 2, cardY + 6, cardW + 4,
+                cardH + 4, kFrameRadius + 2, 0, 0, 0, 0.09);
+    fillRounded(local.data(), bw, bh, cardX, cardY + 5, cardW, cardH,
+                kFrameRadius, 0, 0, 0, 0.18);
+    // 玻璃底
+    fillRounded(local.data(), bw, bh, cardX, cardY, cardW, cardH,
+                kFrameRadius, gr, gg, gb, ga);
+    // 玻璃描边：顶部受光纵向渐变（白 55% → 12%）
+    strokeRoundedV(local.data(), bw, bh, cardX, cardY, cardW, cardH,
+                   kFrameRadius, 0.75, 255, 255, 255, 0.55, 0.12);
+    // 外侧细暗边（黑 10%）
+    strokeRoundedV(local.data(), bw, bh, cardX - 0.5, cardY - 0.5, cardW + 1,
+                   cardH + 1, kFrameRadius + 0.5, 0.5, 0, 0, 0, 0.10, 0.10);
+
+    // 照片（同心圆角 12）
+    const core::ImageBuffer thumb = core::scaleNearest(image, photoW, photoH);
+    const double photoX = cardX + kFrameInset;
+    const double photoY = cardY + kFrameInset;
+    for (int py = 0; py < photoH; ++py) {
+        for (int px = 0; px < photoW; ++px) {
+            const double d = roundedRectSdf(photoX + px + 0.5,
+                                            photoY + py + 0.5, photoX, photoY,
+                                            photoW, photoH, kPhotoRadius);
+            const double coverage = std::clamp(0.5 - d, 0.0, 1.0);
+            if (coverage <= 0.0) {
                 continue;
             }
-            std::uint32_t* dst =
-                &pixels[static_cast<std::size_t>(dy) * bufferWidth + dx];
-            const std::uint32_t dstColor = *dst;
-            const std::uint32_t inv = 255 - src.a;
-            const std::uint32_t r =
-                (src.r * src.a + ((dstColor >> 16) & 0xFF) * inv) / 255;
-            const std::uint32_t g =
-                (src.g * src.a + ((dstColor >> 8) & 0xFF) * inv) / 255;
-            const std::uint32_t b =
-                (src.b * src.a + (dstColor & 0xFF) * inv) / 255;
-            *dst = 0xFF000000u | (r << 16) | (g << 8) | b;
+            const core::Rgba src = thumb.pixel(px, py);
+            blendPixel(local.data(), bw, bh,
+                       static_cast<int>(photoX) + px,
+                       static_cast<int>(photoY) + py, src.r, src.g, src.b,
+                       (src.a / 255.0) * coverage);
+        }
+    }
+    // 照片内缘描边（白 18%）
+    strokeRoundedV(local.data(), bw, bh, photoX, photoY, photoW, photoH,
+                   kPhotoRadius, 0.5, 255, 255, 255, 0.18, 0.18);
+
+    // 衣夹（z 序在卡片之上）：投影 + 拉丝金属 + 受光描边 + 绳槽
+    const double clipX = bw / 2.0 - kClipWidth / 2;
+    fillRounded(local.data(), bw, bh, clipX, 1.5, kClipWidth, kClipHeight,
+                3.5, 0, 0, 0, 0.30);
+    for (int py = 0; py < static_cast<int>(kClipHeight) + 1; ++py) {
+        for (int px = 0; px < static_cast<int>(kClipWidth) + 1; ++px) {
+            const double d = roundedRectSdf(clipX + px + 0.5, py + 0.5, clipX,
+                                            0, kClipWidth, kClipHeight, 3.5);
+            const double coverage = std::clamp(0.5 - d, 0.0, 1.0);
+            if (coverage <= 0.0) {
+                continue;
+            }
+            // 拉丝金属：水平渐变（亮斑偏左），对齐 tendedero 的 stops
+            const double t = (px + 0.5) / kClipWidth;
+            double v;
+            if (t < 0.35) {
+                v = 179 + (237 - 179) * (t / 0.35);
+            } else if (t < 0.65) {
+                v = 237 + (209 - 237) * ((t - 0.35) / 0.30);
+            } else {
+                v = 209 + (158 - 209) * ((t - 0.65) / 0.35);
+            }
+            blendPixel(local.data(), bw, bh, static_cast<int>(clipX) + px, py,
+                       v, v, v, coverage);
+        }
+    }
+    strokeRoundedV(local.data(), bw, bh, clipX, 0, kClipWidth, kClipHeight,
+                   3.5, 0.6, 255, 255, 255, 0.90, 0.0);
+    // 描边下段补暗（tendedero 是白→黑渐变；上面只画了白，补一道底部暗边）
+    fillRounded(local.data(), bw, bh, bw / 2.0 - 2.5, 8.5, 5, 1.4, 0.7, 0, 0,
+                0, 0.32);
+
+    // 旋转贴到面板：锚点 = 衣夹顶中（绳子上方 kPinAbove 处）。
+    const double anchorX = centerX;
+    const double anchorY = ropeYAt(centerX, width) - kPinAbove;
+    const double rad = tilt * 3.14159265358979323846 / 180.0;
+    const double cosT = std::cos(rad);
+    const double sinT = std::sin(rad);
+    // 目标包围盒：旋转局部缓冲四角（局部坐标以锚点为原点）。
+    double minX = 0, maxX = 0, minY = 0, maxY = 0;
+    for (const auto& corner :
+         {std::pair{-bw / 2.0, 0.0}, {bw / 2.0, 0.0},
+          {-bw / 2.0, static_cast<double>(bh)},
+          {bw / 2.0, static_cast<double>(bh)}}) {
+        const double rx = corner.first * cosT - corner.second * sinT;
+        const double ry = corner.first * sinT + corner.second * cosT;
+        minX = std::min(minX, rx);
+        maxX = std::max(maxX, rx);
+        minY = std::min(minY, ry);
+        maxY = std::max(maxY, ry);
+    }
+    for (int dy = static_cast<int>(std::floor(minY));
+         dy <= static_cast<int>(std::ceil(maxY)); ++dy) {
+        for (int dx = static_cast<int>(std::floor(minX));
+             dx <= static_cast<int>(std::ceil(maxX)); ++dx) {
+            // 逆映射回局部缓冲（y 向下、屏幕顺时针为正角）。
+            const double lx = dx * cosT + dy * sinT + bw / 2.0;
+            const double ly = -dx * sinT + dy * cosT;
+            const int sx = static_cast<int>(std::lround(lx));
+            const int sy = static_cast<int>(std::lround(ly));
+            if (sx < 0 || sy < 0 || sx >= bw || sy >= bh) {
+                continue;
+            }
+            const std::uint32_t src =
+                local[static_cast<std::size_t>(sy) * bw + sx];
+            const double sa = ((src >> 24) & 0xFF) / 255.0;
+            if (sa <= 0.0) {
+                continue;
+            }
+            blendPixel(pixels, width, height,
+                       static_cast<int>(std::lround(anchorX)) + dx,
+                       static_cast<int>(std::lround(anchorY)) + dy,
+                       (src >> 16) & 0xFF, (src >> 8) & 0xFF, src & 0xFF, sa);
         }
     }
 }
@@ -330,7 +564,7 @@ core::ImageBuffer loadThumbnail(const std::string& path) {
     return image;
 }
 
-/// 渲染一帧：背景 + 晾衣绳 + 卡片与缩略图。
+/// 渲染一帧：透明面板 + 抛物线晾衣绳 + 衣夹卡片（tendedero 样式）。
 void renderFrame(WlState* state, const std::vector<std::string>& items) {
     if (state->width <= 0 || state->height <= 0) {
         return;
@@ -358,63 +592,44 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
     const int width = state->width;
     const int height = state->height;
 
-    // 1) 背景
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            pixels[static_cast<std::size_t>(y) * width + x] = gPalette->bg;
-        }
-    }
-    // 2) 晾衣绳
-    for (int y = kRopeY; y < kRopeY + 2 && y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            pixels[static_cast<std::size_t>(y) * width + x] = gPalette->rope;
-        }
-    }
+    // 1) 透明底板（tendedero 形态：只有绳子、衣夹和卡片可见，
+    //    桌面从其余区域透出来）。
+    std::memset(data, 0, static_cast<std::size_t>(width) * height * 4);
 
-    // 3) 卡片与缩略图
-    if (items.empty()) {
-        // 空态：中线一小段标记
-        for (int y = height / 2; y < height / 2 + 3; ++y) {
-            for (int x = width / 2 - 30; x < width / 2 + 30; ++x) {
-                putPixel(pixels, width, x, y, gPalette->emptyMark);
-            }
+    // 2) 抛物线晾衣绳（两端淡出）
+    drawRope(pixels, width, height);
+
+    // 3) 卡片与缩略图（居中排布；解码失败的条目直接不占位）
+    std::vector<std::pair<std::string, core::ImageBuffer>> cards;
+    for (const std::string& path : items) {
+        core::ImageBuffer image = loadThumbnail(path);
+        if (!image.isEmpty()) {
+            cards.emplace_back(path, std::move(image));
         }
+    }
+    if (cards.empty()) {
+        // 空态：绳子中点下方的胶囊标记（无字体渲染能力，用形状示意）
+        const double cx = width / 2.0;
+        const double cy = ropeYAt(cx, width) + 34;
+        fillRounded(pixels, width, height, cx - 60, cy - 12, 120, 24, 12,
+                    (gPalette->emptyMark >> 16) & 0xFF,
+                    (gPalette->emptyMark >> 8) & 0xFF,
+                    gPalette->emptyMark & 0xFF,
+                    ((gPalette->emptyMark >> 24) & 0xFF) / 255.0);
     } else {
-        for (std::size_t i = 0; i < items.size(); ++i) {
-            const int cardX =
-                kMarginLeft + static_cast<int>(i) * (kCardWidth + kCardGap);
-            const int cardY = 22;
-            if (cardX >= width) {
-                break;  // 超出屏幕宽度
-            }
-            // 卡片底
-            for (int y = cardY; y < cardY + kCardHeight && y < height; ++y) {
-                for (int x = cardX; x < cardX + kCardWidth && x < width; ++x) {
-                    putPixel(pixels, width, x, y, gPalette->cardBg);
-                }
-            }
-            // 挂线（绳子到卡片）
-            const int centerX = cardX + kCardWidth / 2;
-            for (int y = kRopeY + 2; y < cardY; ++y) {
-                putPixel(pixels, width, centerX, y, gPalette->rope);
-            }
-            // 缩略图：等比缩放到卡片内（留 12px 边距）
-            core::ImageBuffer image = loadThumbnail(items[i]);
-            if (image.isEmpty()) {
-                continue;
-            }
-            const int maxW = kCardWidth - 12;
-            const int maxH = kCardHeight - 12;
-            const double scale = std::min(
-                static_cast<double>(maxW) / image.width(),
-                static_cast<double>(maxH) / image.height());
-            const int targetW = std::max(1, static_cast<int>(image.width() * scale));
-            const int targetH = std::max(1, static_cast<int>(image.height() * scale));
-            const core::ImageBuffer thumb =
-                core::scaleNearest(image, targetW, targetH);
-            blendImage(pixels, width,
-                       cardX + (kCardWidth - targetW) / 2,
-                       cardY + (kCardHeight - targetH) / 2, thumb);
+        // 居中排布；张数过多时间距压缩，两端不出屏（同 Qt 衣架）。
+        const int count = static_cast<int>(cards.size());
+        const int gaps = std::max(count - 1, 0);
+        const double step =
+            gaps > 0
+                ? std::min(static_cast<double>(kCardSpacing),
+                           std::max(0, width - 200) / static_cast<double>(gaps))
+                : kCardSpacing;
+        for (int i = 0; i < count; ++i) {
+            const double cx =
+                width / 2.0 - gaps * step / 2.0 + i * step;
+            drawCard(pixels, width, height, cx, cards[static_cast<std::size_t>(i)].second,
+                     tiltForPath(cards[static_cast<std::size_t>(i)].first));
         }
     }
 
@@ -423,7 +638,7 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
     wl_surface_commit(state->surface);
     wl_display_flush(state->display);
     std::fprintf(stdout, "[jie2-line] 渲染 %dx%d，%zu 张\n", width, height,
-                 items.size());
+                 cards.size());
     std::fflush(stdout);
 }
 
