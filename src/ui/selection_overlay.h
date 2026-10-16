@@ -192,7 +192,11 @@ private:
     // ---- 标注（M2）----
     core::AnnotationDocument annotations_;
     core::AnnotationTool currentTool_ = core::AnnotationTool::Rect;
-    int currentColorIndex_ = 0;
+    /// 调色板索引：**每个工具独立记忆**（专业版对齐项 v2.4：
+    /// "为不同标注形状分别记忆颜色"）—— 切换工具时各自的颜色不变。
+    /// 按 AnnotationTool 的枚举值索引（当前 11 个工具；数组略大留余量）。
+    /// 初值：马克笔默认黄（1），其余默认红（0）。
+    int colorIndexByTool_[16] = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int currentWidth_ = 3;          // 线宽（物理像素）
     bool dashed_ = false;           // 虚线样式（D 键切换）
     int cornerRadius_ = 0;          // 圆角矩形半径（R 键循环 0/8/16/24）

@@ -573,6 +573,10 @@ int main(int argc, char** argv) {
             overrides.sizeWidth = std::atoi(argv[++i]);
             overrides.sizeHeight = std::atoi(argv[++i]);
         }
+        // --keep-aspect-ratio：配合 --size，等比缩放到 W×H 内（专业版 v2.8.6）。
+        if (std::strcmp(argv[i], "--keep-aspect-ratio") == 0) {
+            overrides.keepAspectRatio = true;
+        }
         // --active-screen：用光标所在屏幕（默认主屏）。
         if (std::strcmp(argv[i], "--active-screen") == 0) {
             activeScreen = true;

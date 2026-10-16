@@ -193,7 +193,17 @@ TrayController::~TrayController() {
     if (platform_) {
         platform_->releaseAllHotkeys();
     }
+    // 贴图窗口与衣架窗口：退出时统一销毁。
+    // （ASan 曾报告 Clothesline 等退出泄漏 —— 顶层窗口没有父对象，
+    //   不显式释放就会泄漏；虽不影响功能，但退出路径应当干净。）
+    for (PinWindow* pin : pins_) {
+        delete pin;
+    }
+    pins_.clear();
+    delete clothesline_;
+    clothesline_ = nullptr;
     delete menu_;
+    menu_ = nullptr;
 }
 
 bool TrayController::start() {
@@ -435,12 +445,18 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error) {
     // 放在保存前统一处理，使文件与剪贴板拿到同一份成品。
     QImage output = decorateForOutput(image);
     // --size W H（M6）：强制输出尺寸（在装饰之后，得到的就是最终尺寸）。
+    // --keep-aspect-ratio（专业版对齐项 v2.8.6）：改"拉伸填满"为
+    // "等比缩放到 W×H 内" —— 输出可能小于指定尺寸（取决于源比例），
+    // 这与 Snipaste 的语义一致（保比例优先于精确尺寸）。
     if (overrides_.hasSize && overrides_.sizeWidth > 0 &&
         overrides_.sizeHeight > 0 &&
         (output.width() != overrides_.sizeWidth ||
          output.height() != overrides_.sizeHeight)) {
+        const Qt::AspectRatioMode mode = overrides_.keepAspectRatio
+                                             ? Qt::KeepAspectRatio
+                                             : Qt::IgnoreAspectRatio;
         output = output.scaled(overrides_.sizeWidth, overrides_.sizeHeight,
-                               Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                               mode, Qt::SmoothTransformation);
     }
     // 色彩管理（M1 收尾项）：像素语义本就是 sRGB（实测与系统工具差异≤1），
     // 这里补上颜色空间标记，让严格做色彩管理的程序正确解释本文件。
@@ -1160,8 +1176,27 @@ void TrayController::triggerPin() {
         rebuildMenu();
     });
 
+    // Ctrl+A 全选/取消全选（专业版 v2.4）。
+    connect(pin, &PinWindow::selectAllRequested, this,
+            &TrayController::toggleSelectAllPins);
+
+    // 拖动联动：拖动某张**选中**贴图时，其余选中的一起移动。
+    connect(pin, &PinWindow::movedBy, this, [this, pin](const QPoint& delta) {
+        if (!pin->isSelected()) {
+            return;  // 拖动的是未选中窗口：不联动
+        }
+        for (PinWindow* other : pins_) {
+            if (other != nullptr && other != pin && other->isSelected()) {
+                other->move(other->pos() + delta);
+            }
+        }
+    });
+
     // 新贴图归入当前分组（专业版对齐项）。
     pin->setGroup(currentPinGroup_);
+
+    // Esc / Shift+Esc 动作（专业版 v2.8：可自定义）。
+    pin->setDismissActions(pinEscAction_, pinShiftEscAction_);
 
     pins_.push_back(pin);
     pinsHidden_ = false;
@@ -1347,6 +1382,31 @@ void TrayController::activateExistingInstance() {
     qInfo().noquote() << QStringLiteral("[jie2] 唤起已有实例");
     note(QStringLiteral("截2 已在运行"),
          QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图"));
+}
+
+void TrayController::toggleSelectAllPins() {
+    if (pins_.empty()) {
+        return;
+    }
+    // toggle 语义：只要还有未选中的就全选，否则全部取消。
+    const bool anyUnselected = std::any_of(
+        pins_.begin(), pins_.end(),
+        [](PinWindow* pin) { return pin != nullptr && !pin->isSelected(); });
+    for (PinWindow* pin : pins_) {
+        if (pin != nullptr) {
+            pin->setSelected(anyUnselected);
+        }
+    }
+    qInfo().noquote() << QStringLiteral("[jie2] 贴图%1（%2 张）%3")
+                             .arg(anyUnselected ? QStringLiteral("全选")
+                                                : QStringLiteral("取消全选"))
+                             .arg(pins_.size())
+                             .arg(anyUnselected
+                                      ? QStringLiteral("—— 拖动任一即整体移动")
+                                      : QString());
+    note(anyUnselected ? QStringLiteral("已全选贴图")
+                       : QStringLiteral("已取消全选"),
+         QStringLiteral("%1 张").arg(pins_.size()));
 }
 
 void TrayController::switchPinGroup(int group) {
@@ -1644,6 +1704,19 @@ void TrayController::loadConfig() {
 
     // 标注调色板（M2 增补，专业版对齐项）
     paletteSize_ = config.getInt("annotation.palette_size", 6);
+
+    // 贴图 Esc 行为（专业版对齐项 v2.8：可自定义 Esc / Shift+Esc 的功能）。
+    // 值："close"（关闭，从列表移除）| "hide"（隐藏，可由托盘恢复）。
+    {
+        const std::string escAction = config.get("pin.esc_action", "close");
+        const std::string shiftEscAction =
+            config.get("pin.shift_esc_action", "hide");
+        pinEscAction_ = escAction == "hide" ? PinWindow::DismissAction::Hide
+                                            : PinWindow::DismissAction::Close;
+        pinShiftEscAction_ =
+            shiftEscAction == "hide" ? PinWindow::DismissAction::Hide
+                                     : PinWindow::DismissAction::Close;
+    }
 
     // OCR（M5）
     std::string ocrWarning;

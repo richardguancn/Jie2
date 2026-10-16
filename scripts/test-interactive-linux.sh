@@ -76,17 +76,21 @@ click "$UNDO_X" "$RECT_Y"
 echo "== 4. 重做 =="
 click "$REDO_X" "$RECT_Y"
 
-echo "== 5. 换颜色（红→黄）=="
-click "$COLOR_X" "$RECT_Y"
-
-echo "== 5.5 切换到箭头工具 =="
+echo "== 5. 切换到箭头工具（先切，再换色）=="
 click "$ARROW_X" "$RECT_Y"
+
+echo "== 5.5 换颜色（箭头工具：红→黄）=="
+# 注意：颜色按形状独立记忆（专业版 v2.4）——必须**在箭头工具下**点颜色，
+# 否则改的是别的工具的颜色，箭头仍是红色（本测试曾因此断言失败）。
+click "$COLOR_X" "$RECT_Y"
 
 echo "== 6. 绘制箭头 (360,250)-(450,360) =="
 drag 360 250 450 360
 
-echo "== 6.5 文字工具：点击 (150,340) 输入 TEST 回车 =="
+echo "== 6.5 文字工具：切工具 → 换色（文字自己的红→黄）→ 输入 TEST =="
 click "$TEXT_X" "$RECT_Y"
+# 颜色按形状独立记忆（v2.4）：文字工具要黄色，需在**文字工具下**点颜色。
+click "$COLOR_X" "$RECT_Y"
 xdotool mousemove --sync 150 340 sleep 0.2 click 1
 sleep 0.5
 xdotool type --delay 60 "TEST"
@@ -94,8 +98,10 @@ sleep 0.3
 xdotool key Return
 sleep 0.5
 
-echo "== 6.6 序号工具：点击两次放置 1、2 =="
+echo "== 6.6 序号工具：切工具 → 换色（序号自己的红→黄）→ 点击两次放置 1、2 =="
 click "$NUMBER_X" "$RECT_Y"
+# 颜色按形状独立记忆（v2.4）：序号工具要黄色，需在**序号工具下**点颜色。
+click "$COLOR_X" "$RECT_Y"
 xdotool mousemove --sync 430 150 sleep 0.2 click 1
 sleep 0.4
 xdotool mousemove --sync 470 190 sleep 0.2 click 1

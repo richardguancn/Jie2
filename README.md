@@ -174,6 +174,10 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | **Wayland Screenshot M7** | — | ✅ **E2E（mock 门户 + 像素核对）**：全屏抓取（源图 5 种行滤波轮转、4 点像素核实）、区域裁剪（2 点核实）、越界/取消如实失败；**5 轮连续通过** |
 | **打包 M7** | ✅ **自包含包**：`--bundle-qt` 产出 12MB zip（5 个 Qt 框架 + 9 个插件 + 重签名）；dyld 验证全部从包内加载；GUI 运行正常 | ✅ **双格式**：deb（2.4MB，安装后运行正常）+ AppImage 风格自解压包（3.7MB，GUI 冒烟通过、`--version` 正常） |
 | **单实例 IPC**（唤起/命令送达） | ✅ **E2E**：`--empty-group` 送达执行、二次启动唤起、实例数=1 | ✅ **E2E**：合成热键贴 1 张真实贴图 → 命令清空它 → 二次启动唤起 → 无实例清晰报错 |
+| **形状记忆颜色**（专业版 v2.4） | — | ✅ **E2E**：4 色场景矩形推进到绿 → 椭圆独立从黄开始 → 切回矩形续蓝 |
+| **贴图全选拖动**（专业版 v2.4） | — | ✅ **E2E**：3 张同步位移 (120,60)；取消全选后不再联动 |
+| **贴图 Esc 自定义**（专业版 v2.8） | — | ✅ **E2E**：默认 Esc 关闭销毁；`esc=hide` 配置下只隐藏（窗口保留不可见） |
+| **--keep-aspect-ratio**（v2.8.6） | ✅ 80×20 源 + 200×70 → 200×50（保 4:1） | 同左（共用输出管线） |
 | **layer-shell 顶部条**（Wayland 衣架） | —（macOS 无此概念） | ✅ **五项全过**（Sway 真实合成器）：自动切换 / items 文件 / 无孤儿 / 输出像素（缩略图色值精确）/ 层叠语义（盖住普通窗口） |
 | **贴图分组管理窗口** | — | ✅ `--show-group-manager` 可重复打开（Esc 关闭后主实例存活） |
 | **Windows 后端** | — | ✅ **双工具链**交叉编译（brew GCC 16.2.0/UCRT + Debian GCC 12-posix/msvcrt）+ 导入表检查；运行级验证待 Windows 实机 |
@@ -287,6 +291,8 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
   - `--shadow` / `--no-shadow` / `--border N` / `--round N`：本次调用的装饰覆盖
     （不写入配置文件 —— 命令行调用不改变用户的持久设置）
   - `--size W H`：强制输出尺寸（实测：60×40 源 → 180×90 输出）
+  - `--keep-aspect-ratio`（专业版对齐项 v2.8.6）：配合 `--size` 等比缩放到
+    W×H 内（实测：80×20 源 + 200×70 目标 → 200×50，保持 4:1）
   - `--active-screen`：用光标所在屏而非主屏
   - `--hold`：截图后先标注再输出（等价于打开交互遮罩，对齐 Snipaste 的 `snip --hold`）
   - `--block [SECONDS]`：兼容参数（本 CLI 天然同步，命令返回即完成）
@@ -295,10 +301,24 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 - **M2 增补：调色板数量可配置**（专业版对齐项）—— 10 色内置调色板，
   配置 `annotation.palette_size` 控制循环数量（2~10）。
   实测：设为 3 时颜色按 黄→绿→红→黄 循环，第 4 次回到第 1 色。
+- **M2 增补：形状记忆颜色**（专业版对齐项 v2.4：为不同标注形状分别记忆颜色）——
+  调色板索引按工具独立存储：切换工具各自的颜色不变、切回继续。
+  实测 4 色场景（`scripts/test-color-memory-linux.sh`）：矩形推进到绿后，
+  切椭圆是椭圆自己的第 1 次（黄），切回矩形继续第 3 次（蓝）。
 - **M4 增补：贴图分组管理**（专业版对齐项）—— 默认 3 组，托盘菜单「贴图分组」切换；
   只显示当前组的贴图、其余隐藏（保留在内存与列表）；"隐藏全部"与分组正交。
   实测 12 项断言：建 2 张 → 组 0 可见 2；切组 1 → 可见 0；组 1 建 1 张 → 可见 1；
   切回组 0 → 可见 2；"下一组"循环正确。
+- **M4 增补：贴图全选与拖动联动**（专业版对齐项 v2.4：Ctrl+A 全选贴图）——
+  在任一贴图上 Ctrl+A 全选/取消全选（Toggle）；全选后拖动任一贴图，
+  其余选中贴图同步位移（选中态画高亮边框）。
+  实测（`scripts/test-pin-select-linux.sh`）：三张同步位移 (120,60) 完全一致；
+  取消全选后再拖动不再联动。
+- **M4 增补：Esc 行为自定义**（专业版对齐项 v2.8：可自定义贴图 Esc 和
+  Shift+Esc 的功能）—— 配置 `pin.esc_action` / `pin.shift_esc_action`
+  （close = 关闭并移除 | hide = 隐藏保留，可由托盘「显示全部贴图」恢复）。
+  实测两场景（`scripts/test-pin-esc-linux.sh`）：默认 Esc=关闭（窗口销毁）；
+  配 esc=hide 后 Esc 只隐藏（窗口保留、不可见）。
 - **M6 增补：二维码/条形码识别**（专业版对齐项 `barcode-scan` / `barcode-decode`）——
   zbar 后端（`zbarimg`）+ 托盘菜单「识别二维码/条形码」+ CLI 文件入口。
   实测：qrencode 生成 "JIE2-BARCODE-TEST" → 识别内容精确匹配；
@@ -505,6 +525,17 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
     ② 取调用方唯一名要用方法装饰器的 `sender_keyword` 参数 ——
     `dbus.get_current_message()` 这个 API 在 dbus-python 里不存在
     （AttributeError）。
+19. **退出路径的窗口泄漏**（`tray.cpp`，ASan 发现）：Clothesline 与未关闭的
+    贴图窗口都是无父对象顶层窗口，析构不清理 → LeakSanitizer 报 3548 字节
+    / 22 处。修复：TrayController 析构统一 `delete`。修复后降到 1032 字节
+    / 1 处（仅剩 libdbus 内部，非本代码）。
+    附带记录：曾观察到**一次**退出期 segfault，其后 5 次按同场景复现未果；
+    ASan 全场景（含 hide 贴图后退出）0 个内存错误 —— 判断非确定性内存 bug，
+    但退出清理已同步加固。**教训：一次性崩溃也要给 ASan 机会，别只靠复现。**
+20. **xdotool 搜不到中文标题窗口**（测试环境坑）：`xdotool search --name "贴图"`
+    恒为空（xdotool 的 `--name` 只可靠处理 Latin-1），但 `getwindowname`
+    能正常读出 UTF-8 中文标题。修复：先 `search --class jie2`、再用
+    `getwindowname` 客户端过滤。写 X11 自动化测试必踩此坑。
 
 ### 已知待办：截图色彩管理（如实记录）
 

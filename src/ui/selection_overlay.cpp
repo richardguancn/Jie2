@@ -375,7 +375,10 @@ core::Rgba SelectionOverlay::currentColor() const {
         static_cast<int>(sizeof(palette) / sizeof(palette[0]));
     // 生效数量：配置值夹在 [2, kPaletteSize]（少于 2 个颜色无法切换）。
     const int count = std::clamp(paletteSize_, 2, kPaletteSize);
-    return palette[((currentColorIndex_ % count) + count) % count];
+    // 取**当前工具**自己的颜色索引（专业版 v2.4：形状分别记忆颜色）。
+    const int index =
+        colorIndexByTool_[static_cast<int>(currentTool_) % 16];
+    return palette[((index % count) + count) % count];
 }
 
 void SelectionOverlay::rebuildComposed() {
@@ -996,18 +999,21 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
             performRedo();
             return;
         case ToolbarButton::Color: {
-            currentColorIndex_ += 1;
+            // 只推进**当前工具**的颜色索引（专业版 v2.4：形状分别记忆颜色）。
+            int& index = colorIndexByTool_[static_cast<int>(currentTool_) % 16];
+            index += 1;
             const core::Rgba rgba = currentColor();
             const QString hex = QStringLiteral("#%1%2%3")
                                     .arg(rgba.r, 2, 16, QLatin1Char('0'))
                                     .arg(rgba.g, 2, 16, QLatin1Char('0'))
                                     .arg(rgba.b, 2, 16, QLatin1Char('0'))
                                     .toUpper();
-            // 也写日志：调色板大小可配置，日志是自动化验证与排障的依据。
-            qInfo().noquote() << QStringLiteral("[jie2] 颜色：%1（调色板 %2 色，第 %3 次切换）")
+            // 也写日志：调色板大小可配置、颜色按工具记忆 —— 日志是自动化验证与排障的依据。
+            qInfo().noquote() << QStringLiteral("[jie2] 颜色：%1（工具=%2，调色板 %3 色，该工具第 %4 次切换）")
                                      .arg(hex)
+                                     .arg(QString::fromUtf8(toolDisplayName(currentTool_)))
                                      .arg(std::clamp(paletteSize_, 2, 10))
-                                     .arg(currentColorIndex_);
+                                     .arg(index);
             showToast(QStringLiteral("颜色 %1").arg(hex));
             update();
             return;

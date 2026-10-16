@@ -35,6 +35,19 @@ public:
     void setGroup(int group) { group_ = group; }
     int group() const { return group_; }
 
+    /// 选中态（专业版对齐项 v2.4：Ctrl+A 全选贴图）。
+    /// 选中的贴图会画高亮边框；拖动其中一张时其余选中的一起移动。
+    void setSelected(bool on) { selected_ = on; update(); }
+    bool isSelected() const { return selected_; }
+
+    /// 消隐动作（专业版对齐项 v2.8：可自定义贴图 Esc 和 Shift+Esc 的功能）。
+    /// Close = 关闭（从列表移除）；Hide = 隐藏（保留，可由托盘"显示全部"恢复）。
+    enum class DismissAction { Close, Hide };
+    void setDismissActions(DismissAction esc, DismissAction shiftEsc) {
+        escAction_ = esc;
+        shiftEscAction_ = shiftEsc;
+    }
+
     /// 从剪贴板内容创建：图像 / 文本 / 颜色值 / 图像文件路径。
     /// 失败时返回 nullptr 并通过 error 说明原因（不静默）。
     /// 调用方负责 delete。
@@ -78,6 +91,11 @@ public:
 signals:
     void closed();
 
+    /// Ctrl+A（在任一贴图上按下）：请求托盘控制器全选/取消全选所有贴图。
+    void selectAllRequested();
+    /// 拖动时报告本次位移（供托盘控制器联动其余选中贴图）。
+    void movedBy(const QPoint& delta);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -105,6 +123,9 @@ private:
     bool flipV_ = false;
     bool inverted_ = false;
     bool thumbnail_ = false;
+    bool selected_ = false;  // 选中态（Ctrl+A 全选后拖动联动）
+    DismissAction escAction_ = DismissAction::Close;         // Esc 默认关闭
+    DismissAction shiftEscAction_ = DismissAction::Hide;     // Shift+Esc 默认隐藏
     double scale_ = 1.0;
     double opacityPercent_ = 100.0;
     bool mouseThrough_ = false;

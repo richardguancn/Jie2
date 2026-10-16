@@ -384,6 +384,12 @@ void PinWindow::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(QColor(0, 0, 0, 60), 1));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(rect().adjusted(0, 0, -1, -1));
+
+    // 选中态：高亮边框（Ctrl+A 全选后可见，拖动联动时提示哪些在动）。
+    if (selected_) {
+        painter.setPen(QPen(QColor(64, 158, 255), 2));
+        painter.drawRect(rect().adjusted(1, 1, -2, -2));
+    }
 }
 
 void PinWindow::closeEvent(QCloseEvent* event) {
@@ -413,7 +419,14 @@ void PinWindow::mousePressEvent(QMouseEvent* event) {
 
 void PinWindow::mouseMoveEvent(QMouseEvent* event) {
     if (dragging_) {
-        move(event->globalPosition().toPoint() - dragOffset_);
+        const QPoint newPos = event->globalPosition().toPoint() - dragOffset_;
+        const QPoint delta = newPos - pos();
+        move(newPos);
+        // 报告位移：托盘控制器让其余**选中**贴图一起动
+        // （专业版 v2.4：全选后整体拖动）。
+        if (!delta.isNull()) {
+            emit movedBy(delta);
+        }
     }
 }
 
@@ -452,14 +465,25 @@ void PinWindow::wheelEvent(QWheelEvent* event) {
 
 void PinWindow::keyPressEvent(QKeyEvent* event) {
     switch (event->key()) {
-        case Qt::Key_Escape:
-            // Shift+Esc = 销毁（本实现中与关闭同义：文件与剪贴板不受影响）。
-            qInfo().noquote() << QStringLiteral("[jie2] 贴图关闭（Esc%1）")
-                                     .arg(event->modifiers().testFlag(Qt::ShiftModifier)
-                                              ? QStringLiteral("，Shift=销毁")
-                                              : QString());
-            close();
+        case Qt::Key_Escape: {
+            // 专业版对齐项 v2.8：Esc / Shift+Esc 的动作可自定义
+            // （关闭 = 从列表移除；隐藏 = 保留，可由托盘"显示全部贴图"恢复）。
+            const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
+            const DismissAction action = shift ? shiftEscAction_ : escAction_;
+            if (action == DismissAction::Hide) {
+                qInfo().noquote()
+                    << QStringLiteral("[jie2] 贴图隐藏（%1，可由托盘「显示全部贴图」恢复）")
+                           .arg(shift ? QStringLiteral("Shift+Esc")
+                                      : QStringLiteral("Esc"));
+                hide();
+            } else {
+                qInfo().noquote() << QStringLiteral("[jie2] 贴图关闭（%1）")
+                                         .arg(shift ? QStringLiteral("Shift+Esc")
+                                                    : QStringLiteral("Esc"));
+                close();
+            }
             return;
+        }
         case Qt::Key_1:
             rotateCounterClockwise();
             return;
@@ -485,6 +509,14 @@ void PinWindow::keyPressEvent(QKeyEvent* event) {
         case Qt::Key_0:
             resetTo100();
             return;
+        case Qt::Key_A:
+            // Ctrl+A：全选/取消全选所有贴图（专业版对齐项 v2.4）。
+            // 具体动作在托盘控制器（它掌握全部贴图），这里只请求。
+            if (event->modifiers().testFlag(Qt::ControlModifier)) {
+                emit selectAllRequested();
+                return;
+            }
+            break;
         case Qt::Key_C:
             if (event->modifiers().testFlag(Qt::ControlModifier)) {
                 copyToClipboard();

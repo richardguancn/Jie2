@@ -15,6 +15,7 @@
 #include "core/capture_history.h"
 #include "core/ocr.h"
 #include "platform/platform.h"
+#include "ui/pin_window.h"  // PinWindow::DismissAction（Esc 行为配置）
 
 class QAction;
 class QMenu;
@@ -76,6 +77,10 @@ public:
     /// （保留在内存与列表里）。传 -1 表示"下一组"（循环）。
     void switchPinGroup(int group);
 
+    /// 全选/取消全选所有贴图（专业版 v2.4：Ctrl+A）。
+    /// 全选后拖动任一选中贴图会带动其余一起移动。
+    void toggleSelectAllPins();
+
     /// 清空当前贴图组（专业版命令行 `empty-group` 的语义）。
     /// 覆盖所有贴图类型：关闭 = 可再贴出（销毁语义由贴图自身的关闭行为处理）。
     /// 返回被关闭的贴图数量。
@@ -115,6 +120,7 @@ public:
         bool hasSize = false;    // --size W H：强制输出尺寸
         int sizeWidth = 0;
         int sizeHeight = 0;
+        bool keepAspectRatio = false;  // --keep-aspect-ratio：配合 --size，保持比例
     };
     void setCaptureOverrides(const CaptureOverrides& overrides);
 
@@ -235,6 +241,11 @@ private:
     std::string pinHotkeyId_;
     bool pinHotkeyRegistered_ = false;
     QString pinHotkeyError_;
+
+    // 贴图 Esc 行为（专业版 v2.8：可自定义 Esc / Shift+Esc 的功能）。
+    // 从配置 pin.esc_action / pin.shift_esc_action 读取（close|hide）。
+    PinWindow::DismissAction pinEscAction_ = PinWindow::DismissAction::Close;
+    PinWindow::DismissAction pinShiftEscAction_ = PinWindow::DismissAction::Hide;
 
     // ---- 文字识别（M5）----
     core::OcrConfig ocrConfig_;
