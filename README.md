@@ -4,7 +4,7 @@
 
 > 当前状态：**M0–M7 主要功能全部落地**（截图 / 标注 / 衣架 / 贴图 / OCR / 命令行 / 打包）。
 > 功能规划与选型依据见 [《截2-可行性评估报告.md》](截2-可行性评估报告.md)。
-> 剩余细化项（贴图分组管理、Wayland portal 路径、Windows 打包）见文末。
+> 剩余细化项（贴图组命令、Windows 平台支持、layer-shell、单实例 IPC）见文末。
 
 ## 架构：三层解耦
 
@@ -370,6 +370,16 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
   `--show-group-manager` 与"二次启动唤起主实例"都依赖它）。
   需要 QLocalServer 命令通道与 main 的启动流程改造。
 - **B. layer-shell 顶部条**（见上）。
+- **C. Windows 平台支持**（现状如实说明）：
+  - 代码现状：`src/platform/` 下**只有 `linux/` 与 `macos/` 两个实现**，
+    Windows 走 `factory.cpp` 的"能力全 Unknown"空实现 —— 即**不能运行**。
+  - 需要的工作：① 新增 `platform/windows/` 实现（Win32：BitBlt/GDI 抓屏、
+    `RegisterHotKey` 全局热键、`SetWindowPos(HWND_TOPMOST)` 置顶窗、
+    剪贴板 DIB 读写）；② Qt6 for Windows 工具链；③ Windows 构建与运行环境。
+  - **为什么没有直接写代码**：当前开发环境（macOS 宿主 + aarch64 Linux
+    容器）没有 Windows 运行/构建链（Qt6 Windows 交叉链 + 运行验证）。
+    在无验证手段的情况下写大段平台代码违背本项目"能验证才声称完成"
+    的原则 —— 该平台应作为独立专项，在具备 Windows 构建环境时开展。
 
 ### 已修掉的真实缺陷（累计）
 
