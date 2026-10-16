@@ -271,6 +271,10 @@ private:
     void loadHistory();
     void saveHistory();
     void recordCapture(const QString& path, const QImage& image);
+    /// 新截图的源区域（全局逻辑坐标）：recordCapture 据此让衣架播放
+    /// "从被截取区域飞入"动效（tendedero CaptureFlight）。由截图路径
+    /// 在 saveAndCopy 前设置，recordCapture 消费后清空。
+    QRect pendingFlyRect_;
 
     /// 保存 PNG 到截图目录并写入剪贴板（截图落点的公共实现）。
     /// writeClipboard=false 时只落盘不回写（Ctrl+Alt+C 保存剪贴板图像用）。

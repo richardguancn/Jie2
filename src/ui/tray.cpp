@@ -636,7 +636,13 @@ QString TrayController::captureRectToFile(const QRect& logicalSelection,
         return setError(QStringLiteral("选区无效（裁剪结果为空）"));
     }
 
-    return saveAndCopy(toQImage(cropped), error);
+    // 脚本化截图（--select）也播飞入动效：selection 已是全局逻辑坐标。
+    pendingFlyRect_ = selection;
+    const QString saved = saveAndCopy(toQImage(cropped), error);
+    if (saved.isEmpty()) {
+        pendingFlyRect_ = QRect();
+    }
+    return saved;
 }
 
 QString TrayController::captureWithSelection(QString* error) {
@@ -754,7 +760,15 @@ QString TrayController::captureWithSelection(QString* error) {
         }
         return {};
     }
-    return saveAndCopy(outcome.outputImage, error);
+    // 飞入动效的源区域（tendedero CaptureFlight）：选区是本屏逻辑坐标，
+    // 转全局逻辑坐标，recordCapture 据此让卡片从被截取的区域飞上衣架。
+    pendingFlyRect_ = outcome.selection;
+    pendingFlyRect_.translate(screen->geometry().topLeft());
+    const QString path = saveAndCopy(outcome.outputImage, error);
+    if (path.isEmpty()) {
+        pendingFlyRect_ = QRect();  // 保存失败：清掉，避免污染下一张截图
+    }
+    return path;
 }
 
 QString TrayController::whiteboardWithSelection(const QColor& background,
@@ -803,7 +817,14 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
     qInfo().noquote() << QStringLiteral("[jie2] 白板模式：输出 %1x%2")
                              .arg(outcome.outputImage.width())
                              .arg(outcome.outputImage.height());
-    return saveAndCopy(outcome.outputImage, error);
+    // 同 captureWithSelection：白板选区也从被截取区域飞上衣架。
+    pendingFlyRect_ = outcome.selection;
+    pendingFlyRect_.translate(geometry.topLeft());
+    const QString path = saveAndCopy(outcome.outputImage, error);
+    if (path.isEmpty()) {
+        pendingFlyRect_ = QRect();
+    }
+    return path;
 }
 
 void TrayController::triggerCapture() {
@@ -1940,6 +1961,13 @@ void TrayController::recordCapture(const QString& path, const QImage& image) {
     saveHistory();
     // 新截图立刻挂上衣架（tendedero 的核心体验：截完就在线上）。
     refreshClothesline();
+    // 飞入动效（tendedero CaptureFlight）：从被截取的区域飞上衣架，
+    // 面板未展开时会先探出承接。无源区域的路径（如剪贴板挂载）
+    // 走挂载掉落动画，不飞。
+    if (clothesline_ != nullptr && !pendingFlyRect_.isEmpty()) {
+        clothesline_->flyCapture(path, pendingFlyRect_);
+    }
+    pendingFlyRect_ = QRect();
 }
 
 void TrayController::setCaptureOverrides(const CaptureOverrides& overrides) {

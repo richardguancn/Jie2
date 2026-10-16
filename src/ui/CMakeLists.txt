@@ -7,6 +7,7 @@
 add_executable(jie2 WIN32 MACOSX_BUNDLE
     annotation_render.cpp
     clothesline.cpp
+    flight_overlay.cpp
     main.cpp
     ocr_runner.cpp
     pin_window.cpp

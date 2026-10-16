@@ -14,6 +14,7 @@ add_library(jie2_core STATIC
     ocr.cpp
     shortcut_map.cpp
     snap.cpp
+    spring.cpp
 )
 
 target_include_directories(jie2_core PUBLIC

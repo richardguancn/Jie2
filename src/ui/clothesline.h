@@ -1,13 +1,18 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QString>  // copyRequested 的信号参数（缺它会引发级联解析错误）
 #include <QWidget>
 
+#include <set>
+#include <string>
 #include <vector>
 
 #include "core/capture_history.h"
+#include "core/spring.h"
 
+class QScreen;
 class QTimer;
 
 namespace jie2::ui {
@@ -20,19 +25,25 @@ namespace jie2::ui {
 /// 每张卡片带一个固定的随机倾斜角。平时收起；指针触到屏幕顶边时
 /// 滑下来，把最近的截图一张张挂在线上。
 ///
-/// 交互（对齐 tendedero 的手势语义，按 Linux/macOS 的差异做了等价替换）：
-///   - 指针停在屏幕顶边 → **滑入动画**展开；指针离开 → **滑出动画**收起
-///   - 单击卡片 → 复制图像到剪贴板
-///   - **把卡片拖出去** → 交给目标程序（拖到文件管理器 = 保存文件；
-///     接受 MoveAction 时该卡片从衣架取下）
-///   - 右键卡片 → 从衣架取下（文件保留，只离开线）
-///   - Esc → 收起
+/// 动效（对齐 tendedero 的动画规格，数值实现见 core/spring.h）：
+///   - 展开/收起：面板整体弹簧滑入（spring 0.42/0.72）/ easeIn 滑出（0.22s）
+///   - 挂载掉落：新卡片从绳子上方 46pt 处弹簧落下（0.42/0.72），
+///     同时带 16° 的欠阻尼摆动衰减到静止（k=46, c=2.6），透明度渐入
+///   - 截图飞入：截图从被截取的区域起飞，沿 30pt 弧线收缩成卡片落位
+///     （FlightOverlay，0.65s easeInOutCubic），落地后卡片 0.16s 淡入接管
+///   - 风吹：面板展开期间，每隔 2.2–4.5s 随机挑一张卡片轻推一下
+///     （0.3s easeOut 到摆角，再欠阻尼弹簧回稳）
+///   - 自动探出：有新截图挂上时，面板自动展开亮相 2.5s 再收起
+///   - 取下坠落：右键取下的卡片加速坠落（e = t³）、越转越歪、渐隐，
+///     0.55s 后离场（FlightOverlay），布局在坠落结束后才收拢
 ///
-/// 与 tendedero 的差异（评估报告 4.3）：
-///   - macOS 菜单栏 → Linux/跨平台用"屏幕顶边热区"替代
-///   - 不接管系统截图设置（Linux 无此概念）
-///   - 倾斜角由路径哈希确定（tendedero 是创建时随机；哈希让同一文件
-///     每次挂载角度一致，也便于测试）
+/// 交互（对齐 tendedero 的手势语义，按 Linux/macOS 的差异做了等价替换）：
+///   - 指针停在屏幕顶边 → 滑入展开；指针离开 → 滑出收起
+///   - 单击卡片 → 复制图像到剪贴板
+///   - 把卡片拖出去 → 交给目标程序（拖到文件管理器 = 保存文件；
+///     接受 MoveAction 时该卡片从衣架取下）
+///   - 右键卡片 → 坠落取下（文件保留，只离开线）
+///   - Esc → 收起
 ///
 /// 约束：本类是 UI 层组件，数据来自 core::CaptureHistory，
 /// 不直接触碰系统 API（连剪贴板都经 QClipboard）。
@@ -43,7 +54,15 @@ public:
     explicit Clothesline(QWidget* parent = nullptr);
 
     /// 载入/刷新挂载项（按时间从旧到新；显示时新的在右）。
+    /// 首次见到的路径视为"新挂上的"：下次展开时播放挂载掉落动画，
+    /// 且面板会自动探出亮相片刻（tendedero：Something new hanging
+    /// shows itself for a moment）。
     void setEntries(std::vector<core::HistoryEntry> entries);
+
+    /// 新截图飞入：从 globalRect（全局逻辑坐标）起飞，落到对应卡片的
+    /// 最终位置。面板未展开时先探出承接。同时最多飞 2 张，多出的走
+    /// 挂载掉落（tendedero 的 flightsInProgress 上限）。
+    void flyCapture(const QString& path, const QRect& globalRect);
 
     /// 启停"顶边停留展开"的轮询（截图进行中应暂停，避免遮挡）。
     void setWatchEnabled(bool enabled);
@@ -56,9 +75,6 @@ public:
     bool isRevealed() const { return revealed_; }
 
     /// 主题（专业版对齐项 v2.6：主题色跟随系统主题）。
-    /// tendedero 的玻璃材质随系统自动深浅；这里体现为卡片玻璃底
-    /// 与提示气泡的深浅两套。绳子按 tendedero 的设计保持中性灰，
-    /// 在深浅壁纸上都可读。
     void setDarkTheme(bool dark);
 
 signals:
@@ -70,6 +86,7 @@ signals:
     /// 由上层在写入前后屏蔽自己的监听器。
     void copyRequested(const QString& path);
     /// 用户右键取下（或拖出被移走）某张（托盘控制器据此更新历史）。
+    /// 取下动画（0.55s 坠落 + 0.6s 布局保持）结束后才发出。
     void entryDropped(const QString& path);
 
 protected:
@@ -81,15 +98,40 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
+    /// 摆动状态（风吹 / 挂载掉落的旋转分量共用）。
+    /// 两段式（tendedero）：先 0.3s easeOut 到目标摆角，
+    /// 再欠阻尼弹簧回稳到 0。
+    struct SwingState {
+        enum class Phase { Idle, EaseOut, Spring } phase = Phase::Idle;
+        double value = 0;         // 当前摆角（度）
+        double easeFrom = 0;      // EaseOut 段起点
+        double easeTo = 0;        // EaseOut 段终点
+        double easeElapsedMs = 0;
+        core::Spring spring;      // Spring 段（value→0）
+    };
+
     struct Item {
         core::HistoryEntry entry;
         QImage thumbnail;  // 懒加载
         double tilt = 0;   // 固定倾斜角（度），由路径哈希决定
+
+        // ---- 动效状态 ----
+        bool pendingArrive = false;  // 新挂上的：等下一次展开时播放掉落
+        bool arriving = false;       // 挂载掉落动画进行中
+        core::Spring arriveOffset;   // 纵向 -46 → 0（spring 0.42/0.72）
+        core::Spring arriveSwing;    // 摆角 16° → 0（k=46, c=2.6）
+        bool flying = false;         // 截图飞入中（本体隐藏，覆盖层在飞）
+        bool falling = false;        // 坠落离场中（面板内不再绘制）
+        bool landing = false;        // 落地淡入（0.16s easeOut）
+        double landElapsedMs = 0;
+        SwingState swing;
     };
 
     void tick();               // 轮询指针位置
     /// 展开到指定屏幕区域（area 为屏幕几何，来自 tick 的指针所在屏）。
     void reveal(const QRect& area);
+    /// 探出亮相：展开并在 kPeekMs 后自动收起（有新截图挂上时）。
+    void peek(const QRect& area);
     void conceal();
     void reloadThumbnails();
 
@@ -101,6 +143,7 @@ private:
     QRectF cardRectF(int index) const;    // 未旋转的卡片边框矩形
     QPointF cardAnchor(int index) const;  // 悬挂点（衣夹顶中），倾斜旋转锚点
     int itemAt(const QPoint& pos) const;  // 命中测试（做倾斜逆变换）
+    int indexOfPath(const QString& path) const;
 
     // ---- 绘制 ----
     void drawRope(QPainter& painter) const;
@@ -108,29 +151,65 @@ private:
     void drawCardBody(QPainter& painter, int index) const;
     void drawEmptyHint(QPainter& painter) const;
 
-    /// 滑入/滑出动画（tendedero 的核心观感）。
-    /// 目标 y = area.top()（展开）或 area.top() - kPanelHeight（收起）。
-    /// 动画结束时收起才真正 hide()；展开期间窗口必须已 show()。
-    void animateTo(int targetY, bool hideAtEnd);
+    // ---- 帧驱动（面板滑动 + 卡片动效共用一个 16ms 定时器）----
+    void advanceFrame();
+    /// 推进一张卡片的动效状态，返回是否仍需下一帧。
+    bool advanceItem(Item& item, double dt, double dtMs);
+    void ensureFrameTimer();
+
+    // ---- 滑入/滑出 ----
+    /// springy = true：弹簧滑入（展开）；false：easeIn 滑出（收起）。
+    void startSlide(int targetY, bool hideAtEnd, bool springy);
     /// 面板所在的屏幕区域（动画与定位共用）。
     QRect panelScreenArea() const;
+    QScreen* panelScreen() const;
+
+    // ---- 卡片动效 ----
+    /// 轻推一张卡片（风吹）：easeOut 到 value+degrees 再弹簧回稳。
+    void nudge(int index, double degrees);
+    /// 风吹节拍：随机挑一张卡片轻推（tendedero 的 breeze）。
+    void gustTick();
+    /// 坠落取下：面板内隐藏卡片，FlightOverlay 播坠落，0.6s 后
+    /// 才真正移除并发 entryDropped（布局保持到坠落结束）。
+    void takeDown(int index);
+    /// 飞行到位：真实卡片以 0.16s 淡入接管。
+    void landFlying(const QString& path);
+
     /// 把某张卡片拖给外部程序（文件管理器等）。
     /// 返回 true 表示对方以 MoveAction 接受 —— 此时卡片从衣架取下。
     bool startDragOut(int index);
 
     std::vector<Item> entries_;
+    /// 见过的路径（判定"新挂上的"；防止容量无界增长，超 500 重建）。
+    std::set<std::string> knownPaths_;
+    /// 是否已完成首次载入（启动载入的历史不算"新挂上的"）。
+    bool primed_ = false;
     bool revealed_ = false;
     bool watchEnabled_ = false;
     int hoverIndex_ = -1;
     QTimer* pollTimer_ = nullptr;
+    /// 探出亮相的截止时刻（frameClock_ 时基）；在此之前不自动收起。
+    qint64 peekUntilMs_ = -1;
+    /// flyCapture 先于 setEntries 到达时暂存的请求。
+    QString pendingFlyingPath_;
+    QRect pendingFlyingRect_;
 
-    // ---- 滑入滑出动画状态 ----
-    // 动画由"窗口沿屏幕上沿移动"实现（定时器驱动）。
-    // 注：Wayland 下本窗口不创建（走 jie2-line 子进程），故只有这一种形态。
-    QTimer* animTimer_ = nullptr;
-    int animTargetY_ = 0;
-    bool animHideAtEnd_ = false;
-    bool animating_ = false;
+    // ---- 帧驱动状态 ----
+    QTimer* frameTimer_ = nullptr;
+    QElapsedTimer frameClock_;   // 帧时钟（也是 peekUntilMs_ 的时基）
+    qint64 lastFrameMs_ = 0;
+
+    // ---- 滑入滑出状态 ----
+    enum class Slide { None, Spring, EaseIn };
+    Slide slideMode_ = Slide::None;
+    core::Spring slideSpring_;   // Spring 模式用
+    double slideFrom_ = 0;       // EaseIn 模式用
+    int slideTargetY_ = 0;
+    double slideElapsedMs_ = 0;  // EaseIn 模式用
+    bool slideHideAtEnd_ = false;
+
+    // ---- 风吹 ----
+    QTimer* gustTimer_ = nullptr;
 
     // ---- 拖出状态 ----
     bool pressedOnCard_ = false;   // 左键按在卡片上（等待判定是点击还是拖拽）
@@ -138,8 +217,6 @@ private:
     int pressedIndex_ = -1;
 
     // ---- 主题色（v2.6）----
-    // tendedero 的绳子与衣夹是中性色（深浅壁纸通用），主题只体现在
-    // 玻璃卡片底与提示气泡上。
     struct StripColors {
         QColor cardGlass;  // 卡片玻璃底（半透明）
         QColor hintBg;     // 空态提示气泡底
@@ -165,9 +242,17 @@ private:
 
     static constexpr int kEdgeZone = 3;       // 触发展开的顶边厚度
     static constexpr int kMaxItems = 12;      // 最多展示数量
-    static constexpr int kAnimStepMs = 12;    // 动画步进间隔
-    static constexpr int kAnimPxPerStep = 14; // 每步位移（≈ 1100px/s，观感干脆）
     static constexpr int kDragStartDistance = 8;  // 超过此位移视为拖出而非点击
+
+    // ---- 动效参数（tendedero 的动画规格）----
+    static constexpr int kFrameMs = 16;          // 帧步进（≈60fps）
+    static constexpr qint64 kPeekMs = 2500;      // 探出亮相时长
+    static constexpr double kSlideEaseInMs = 220;  // 收起时长
+    static constexpr double kArriveDrop = 46;    // 挂载掉落起始高度（pt）
+    static constexpr double kArriveTilt = 16;    // 挂载掉落起始摆角（度）
+    static constexpr double kLandingMs = 160;    // 落地淡入时长
+    static constexpr double kNudgeEaseMs = 300;  // 风吹 easeOut 段时长
+    static constexpr int kFallHoldMs = 600;      // 取下后布局保持时长
 };
 
 } // namespace jie2::ui

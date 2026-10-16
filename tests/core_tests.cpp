@@ -1,6 +1,8 @@
 // 「截2」图像内核单元测试
 // 不依赖 Qt 与平台 API，可在任何环境（含无桌面会话的 CI 容器）运行。
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -13,6 +15,7 @@
 #include "core/image_ops.h"
 #include "core/shortcut_map.h"
 #include "core/snap.h"
+#include "core/spring.h"
 
 namespace {
 
@@ -927,6 +930,109 @@ void testEllipseMaskOps() {
 
 } // namespace
 
+// ---- 弹簧与缓动（衣架动效内核）----
+
+void testSpring() {
+    using namespace jie2::core;
+
+    // 临界阻尼弹簧：单调逼近目标，不越过。
+    {
+        Spring spring = Spring::fromStiffness(100, 20, /*value=*/0,
+                                              /*target=*/1);  // c = 2√k = 临界
+        double prev = spring.value;
+        for (int i = 0; i < 600; ++i) {
+            spring.step(1.0 / 120.0);
+            CHECK(spring.value >= prev - 1e-9);  // 单调上升
+            prev = spring.value;
+        }
+        CHECK(std::abs(spring.value - 1.0) < 1e-3);
+        CHECK(spring.settled(0.01));
+    }
+
+    // 欠阻尼弹簧（挂载掉落的摆动参数 k=46, c=2.6）：会过冲，
+    // 但振荡衰减、最终停稳。
+    {
+        Spring spring = Spring::fromStiffness(46, 2.6, 16, 0);
+        bool overshot = false;
+        double peak = 16.0;
+        for (int i = 0; i < 1200; ++i) {  // 10 秒 @120fps
+            spring.step(1.0 / 120.0);
+            if (spring.value < 0) {
+                overshot = true;
+            }
+            peak = std::max(peak, std::abs(spring.value));
+        }
+        CHECK(overshot);              // 欠阻尼：必然反向过冲
+        CHECK(peak <= 16.0 + 1e-9);   // 衰减：振幅不超初始值
+        CHECK(spring.settled(0.05));
+    }
+
+    // fromResponse 换算：k = (2π/R)²、c = 2ζ·(2π/R)。
+    {
+        const Spring spring = Spring::fromResponse(0.42, 0.72, -46, 0);
+        const double omega = 2.0 * 3.14159265358979323846 / 0.42;
+        CHECK(std::abs(spring.stiffness - omega * omega) < 1e-6);
+        CHECK(std::abs(spring.damping - 2 * 0.72 * omega) < 1e-6);
+        CHECK(spring.value == -46);
+        CHECK(spring.target == 0);
+    }
+
+    // dt ≤ 0 不动作。
+    {
+        Spring spring = Spring::fromStiffness(100, 10, 5, 0);
+        CHECK(spring.step(0) == 5);
+        CHECK(spring.step(-1) == 5);
+        CHECK(spring.velocity == 0);
+    }
+}
+
+void testEasing() {
+    using namespace jie2::core;
+
+    // 端点精确过 0/1（缓动曲线的硬约束：动画首尾必须落在原值/终值）。
+    CHECK(easeInCubic(0) == 0);
+    CHECK(easeInCubic(1) == 1);
+    CHECK(easeInOutCubic(0) == 0);
+    CHECK(easeInOutCubic(1) == 1);
+    CHECK(easeOutCubic(0) == 0);
+    CHECK(easeOutCubic(1) == 1);
+    CHECK(std::abs(swiftuiEaseIn(0)) < 1e-9);
+    CHECK(std::abs(swiftuiEaseIn(1) - 1) < 1e-9);
+    CHECK(std::abs(swiftuiEaseOut(0)) < 1e-9);
+    CHECK(std::abs(swiftuiEaseOut(1) - 1) < 1e-9);
+
+    // 单调性：采样递增（否则动画会"倒走"）。
+    double prevIn = 0, prevOut = 0, prevInOut = 0;
+    for (int i = 1; i <= 100; ++i) {
+        const double t = i / 100.0;
+        const double in = swiftuiEaseIn(t);
+        const double out = swiftuiEaseOut(t);
+        const double inout = easeInOutCubic(t);
+        CHECK(in >= prevIn);
+        CHECK(out >= prevOut);
+        CHECK(inout >= prevInOut);
+        prevIn = in;
+        prevOut = out;
+        prevInOut = inout;
+    }
+
+    // easeInOutCubic 中点对称：f(0.5) = 0.5。
+    CHECK(std::abs(easeInOutCubic(0.5) - 0.5) < 1e-12);
+
+    // smoothstep：a..b 之外是平台，端点精确。
+    CHECK(smoothstep(0.2, 0.35, 1.0) == 0);
+    CHECK(smoothstep(1.5, 0.35, 1.0) == 1);
+    CHECK(std::abs(smoothstep(0.35, 0.35, 1.0)) < 1e-12);
+    CHECK(std::abs(smoothstep(1.0, 0.35, 1.0) - 1) < 1e-12);
+    // 退化（a ≥ b）为阶跃。
+    CHECK(smoothstep(0.5, 0.5, 0.5) == 1);
+    CHECK(smoothstep(0.4, 0.5, 0.5) == 0);
+
+    // cubicBezierY 越界输入裁剪到 [0,1]。
+    CHECK(cubicBezierY(-1, 0.42, 0, 1, 1) == 0);
+    CHECK(cubicBezierY(2, 0.42, 0, 1, 1) == 1);
+}
+
 int main() {
     testGeometry();
     testImageBuffer();
@@ -940,6 +1046,8 @@ int main() {
     testRegionHit();
     testShortcutMap();
     testEllipseMaskOps();
+    testSpring();
+    testEasing();
 
     if (g_failures == 0) {
         std::printf("all core tests passed\n");
