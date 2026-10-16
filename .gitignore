@@ -4,17 +4,72 @@
 # 需要版本保护的是代码、脚本与文档 —— 2026-10-16 发生过一次
 # 脚本被意外截断为 0 字节的事件，此前无任何版本保护）。
 
-# 构建目录（平台构建产物）
-build-linux/
-build-macos/
+# ── 构建目录（各平台构建产物）─────────────────────────
+build/
 build-*/
+cmake-build-*/
 
-# 打包产物
+# ── CMake / Qt 生成物 ─────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+CMakeUserPresets.json
+*_autogen/
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+.qmake.stash
+
+# ── 编译产物 ────────────────────────────────────
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.dSYM/
+*.pdb
+*.ilk
+*.gcda
+*.gcno
+*.profraw
+
+# ── 打包产物 ────────────────────────────────────
 dist/
+*.dmg
+*.AppImage
+*.rpm
+*.deb
+*.msi
 
-# DYWorker 会话临时文件
+# ── IDE / 编辑器 ────────────────────────────────
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+*.swp
+*~
+
+# ── Python / 脚本缓存 ───────────────────────────
+__pycache__/
+*.pyc
+
+# ── DYWorker 会话临时文件 ────────────────────────
 .dyworker/
 
-# 常见噪声
+# ── 常见噪声 ────────────────────────────────────
 *.log
 .DS_Store
+
+# ── 有意入库的例外（勿加忽略规则）────────────────────
+# scripts/color_window_macos、scripts/mouse_tool 是 scripts/*.m、
+# scripts/*.mm 的本机编译产物，历史提交已入库；如需改为忽略，
+# 须先执行 git rm --cached 才会生效。
