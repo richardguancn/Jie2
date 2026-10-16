@@ -23,13 +23,28 @@ CFG_DIR=/root/.config/jie2
 
 pkill -f "Xvfb $DISPLAY_NUM" 2>/dev/null
 sleep 0.5
+rm -f "/tmp/.X${DISPLAY_NUM#:}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM#:}"
 Xvfb $DISPLAY_NUM -screen 0 1280x800x24 >/dev/null 2>&1 &
 XVFB_PID=$!
-sleep 1.5
+# 等 X socket 就绪：盲等固定时长在高负载下出现过"显示未就绪"竞态
+# （xdotool 报 Can't open display → 整项失败）—— 实测教训，不许退回盲等。
+for i in $(seq 1 25); do
+    [ -S "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ] && break
+    sleep 0.2
+done
+sleep 0.8
 
 # 清空环境，保证确定性。
 rm -rf "$CFG_DIR" /root/Pictures/jie2
 rm -f "$LOG"
+
+# 主题固定为深色：本脚本的条带像素断言基于深色底板（37,37,40）——
+# 不固定的话，运行环境的系统主题（gnome color-scheme / 容器 gsettings）
+# 会改变条带配色，让像素断言随环境漂移。
+mkdir -p "$CFG_DIR"
+cat > "$CFG_DIR/jie2.conf" <<EOF
+appearance.theme=dark
+EOF
 
 echo "== 1. 填充历史（两次截图）=="
 "$APP" --select-rect 0,0,64,64 >/dev/null 2>&1

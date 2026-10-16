@@ -12,6 +12,7 @@ add_executable(jie2 WIN32 MACOSX_BUNDLE
     pin_window.cpp
     selection_overlay.cpp
     single_instance.cpp
+    theme.cpp
     tray.cpp
 )
 

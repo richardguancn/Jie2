@@ -55,10 +55,40 @@ constexpr int kCardGap = 14;
 constexpr int kMarginLeft = 16;
 constexpr int kRopeY = 14;
 
-constexpr std::uint32_t kBg = 0xE61A1A1E;      // (26,26,30,230)
-constexpr std::uint32_t kRope = 0xFF9696A0;    // (150,150,160,255)
-constexpr std::uint32_t kCardBg = 0xFF28282E;  // (40,40,46,255)
-constexpr std::uint32_t kEmptyMark = 0xFF78787E;
+// 主题（v2.6：主题色跟随系统主题）——
+// 主进程解析主题后通过环境变量 JIE2_THEME=dark|light 传给本进程；
+// 未设置时保持既有深色观感。
+struct Palette {
+    std::uint32_t bg;
+    std::uint32_t rope;
+    std::uint32_t cardBg;
+    std::uint32_t emptyMark;
+};
+
+constexpr Palette kDarkPalette{
+    0xE61A1A1E,   // (26,26,30,230)
+    0xFF9696A0,   // (150,150,160,255)
+    0xFF28282E,   // (40,40,46,255)
+    0xFF78787E,
+};
+constexpr Palette kLightPalette{
+    0xF5F6F6FA,   // (246,246,250,245)
+    0xFF787884,   // (120,120,132,255)
+    0xFFE2E4EA,   // (226,228,234,255)
+    0xFF3C3E46,   // (60,62,70,255)
+};
+
+const Palette* gPalette = &kDarkPalette;
+
+/// 从环境变量解析主题（只认 dark/light，其余按深色）。
+void applyThemeFromEnv() {
+    const char* theme = std::getenv("JIE2_THEME");
+    if (theme != nullptr && std::strcmp(theme, "light") == 0) {
+        gPalette = &kLightPalette;
+    } else {
+        gPalette = &kDarkPalette;
+    }
+}
 
 struct WlState {
     wl_display* display = nullptr;
@@ -331,13 +361,13 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
     // 1) 背景
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            pixels[static_cast<std::size_t>(y) * width + x] = kBg;
+            pixels[static_cast<std::size_t>(y) * width + x] = gPalette->bg;
         }
     }
     // 2) 晾衣绳
     for (int y = kRopeY; y < kRopeY + 2 && y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            pixels[static_cast<std::size_t>(y) * width + x] = kRope;
+            pixels[static_cast<std::size_t>(y) * width + x] = gPalette->rope;
         }
     }
 
@@ -346,7 +376,7 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
         // 空态：中线一小段标记
         for (int y = height / 2; y < height / 2 + 3; ++y) {
             for (int x = width / 2 - 30; x < width / 2 + 30; ++x) {
-                putPixel(pixels, width, x, y, kEmptyMark);
+                putPixel(pixels, width, x, y, gPalette->emptyMark);
             }
         }
     } else {
@@ -360,13 +390,13 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
             // 卡片底
             for (int y = cardY; y < cardY + kCardHeight && y < height; ++y) {
                 for (int x = cardX; x < cardX + kCardWidth && x < width; ++x) {
-                    putPixel(pixels, width, x, y, kCardBg);
+                    putPixel(pixels, width, x, y, gPalette->cardBg);
                 }
             }
             // 挂线（绳子到卡片）
             const int centerX = cardX + kCardWidth / 2;
             for (int y = kRopeY + 2; y < cardY; ++y) {
-                putPixel(pixels, width, centerX, y, kRope);
+                putPixel(pixels, width, centerX, y, gPalette->rope);
             }
             // 缩略图：等比缩放到卡片内（留 12px 边距）
             core::ImageBuffer image = loadThumbnail(items[i]);
@@ -400,6 +430,8 @@ void renderFrame(WlState* state, const std::vector<std::string>& items) {
 } // namespace
 
 int main(int argc, char** argv) {
+    applyThemeFromEnv();  // 主题（v2.6）：由主进程经 JIE2_THEME 传入
+
     std::string itemsPath;
     int height = kStripHeightDefault;
     int timeoutMs = 0;

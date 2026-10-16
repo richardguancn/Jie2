@@ -18,9 +18,16 @@ CFG=/root/.config/jie2/jie2.conf
 pkill -f "Xvfb $DISPLAY_NUM" 2>/dev/null
 pkill -f "build-linux/src/ui" 2>/dev/null
 sleep 0.5
+rm -f "/tmp/.X${DISPLAY_NUM#:}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM#:}"
 Xvfb $DISPLAY_NUM -screen 0 1280x800x24 >/dev/null 2>&1 &
 XVFB_PID=$!
-sleep 1.5
+# 等 X socket 就绪：盲等固定时长在高负载下出现过"显示未就绪"竞态
+# （xdotool 报 Can't open display → 整项失败）—— 实测教训，不许退回盲等。
+for i in $(seq 1 25); do
+    [ -S "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ] && break
+    sleep 0.2
+done
+sleep 0.8
 
 mkdir -p /root/.config/jie2
 cat > "$CFG" <<EOF

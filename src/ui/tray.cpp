@@ -1,5 +1,7 @@
 #include "ui/tray.h"
 
+#include "ui/theme.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -27,6 +29,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QScreen>
 #include <QStandardPaths>
@@ -226,6 +229,7 @@ bool TrayController::start() {
         updateWaylandLine();
     } else if (clotheslineEnabled_) {
         clothesline_ = new Clothesline();
+        clothesline_->setDarkTheme(darkTheme_);  // 主题跟随系统（v2.6）
         // 复制动作由这里执行（而不是衣架窗口自己）—— 写入剪贴板会同步
         // 触发本控制器的剪贴板监听，而监听会重建衣架数据；把写入集中在
         // 一处并在前后屏蔽监听，避免重入（实测：衣架自己写会导致段错误）。
@@ -727,9 +731,17 @@ QString TrayController::captureWithSelection(QString* error) {
                                  .arg(snapCandidates.size());
     }
 
+    SelectionOverlay::Options overlayOptions;
+    overlayOptions.historyPaths = historyPaths;
+    overlayOptions.recapture = recapture;
+    overlayOptions.snapCandidates = snapCandidates;
+    overlayOptions.paletteSize = paletteSize_;
+    overlayOptions.shortcuts = shortcutMap_;
+    overlayOptions.darkTheme = darkTheme_;
+    overlayOptions.eraserUndoable = eraserUndoable_;
+
     const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
-        QPixmap::fromImage(image), scale, screen, historyPaths, recapture,
-        snapCandidates, paletteSize_);
+        QPixmap::fromImage(image), scale, screen, overlayOptions);
     if (!outcome.accepted) {
         return {};  // 用户取消：静默返回，不算错误
     }
@@ -775,8 +787,13 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
     board.fill(background);
 
     // 白板没有"历史回放"与"F5 刷新"的语义，两者都不传。
-    const SelectionOverlay::Outcome outcome =
-        SelectionOverlay::run(QPixmap::fromImage(board), scale, screen);
+    SelectionOverlay::Options overlayOptions;
+    overlayOptions.paletteSize = paletteSize_;
+    overlayOptions.shortcuts = shortcutMap_;
+    overlayOptions.darkTheme = darkTheme_;
+    overlayOptions.eraserUndoable = eraserUndoable_;
+    const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
+        QPixmap::fromImage(board), scale, screen, overlayOptions);
     if (!outcome.accepted) {
         return {};  // 用户取消：静默
     }
@@ -1016,6 +1033,13 @@ void TrayController::updateWaylandLine() {
     lineProcess_ = new QProcess(this);
     lineProcess_->setProgram(binary);
     lineProcess_->setArguments({QStringLiteral("--items"), itemsPath});
+    // 主题（v2.6）：子进程没有读取主进程内存的渠道，用环境变量传递。
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("JIE2_THEME"),
+                   darkTheme_ ? QStringLiteral("dark") : QStringLiteral("light"));
+        lineProcess_->setProcessEnvironment(env);
+    }
     // 子进程的输出并入主进程日志（便于诊断）。
     lineProcess_->setProcessChannelMode(QProcess::ForwardedChannels);
     lineProcess_->start();
@@ -1763,6 +1787,31 @@ void TrayController::loadConfig() {
     // 标注调色板（M2 增补，专业版对齐项）
     paletteSize_ = config.getInt("annotation.palette_size", 6);
 
+    // 主题（v2.6：主题色跟随系统主题）：解析一次，全 UI 复用。
+    // 优先级：配置显式值 > 环境变量探针（测试）> 系统探测 > 深色默认。
+    themeSetting_ =
+        QString::fromStdString(config.get("appearance.theme", "system"));
+    const ThemeResolution theme = resolveTheme(themeSetting_);
+    darkTheme_ = theme.dark;
+    qInfo().noquote() << QStringLiteral("[jie2] 主题：%1（来源：%2）")
+                             .arg(darkTheme_ ? QStringLiteral("dark")
+                                             : QStringLiteral("light"))
+                             .arg(theme.source);
+
+    // 自定义应用内快捷键（v2.11.3）。
+    std::string shortcutWarning;
+    shortcutMap_ = core::ShortcutMap::fromConfig(config, &shortcutWarning);
+    if (!shortcutWarning.empty()) {
+        qWarning().noquote()
+            << QStringLiteral("[jie2] %1")
+                   .arg(QString::fromStdString(shortcutWarning));
+    }
+
+    // 橡皮擦删除可撤销（v2.6：annotation.eraser_disable_reedit =
+    // 对橡皮擦禁用二次编辑）。
+    eraserUndoable_ =
+        !config.getBool("annotation.eraser_disable_reedit", false);
+
     // 贴图 Esc 行为（专业版对齐项 v2.8：可自定义 Esc / Shift+Esc 的功能）。
     // 值："close"（关闭，从列表移除）| "hide"（隐藏，可由托盘恢复）。
     {
@@ -1826,6 +1875,9 @@ void TrayController::saveConfig() {
 
     // 标注调色板（M2 增补）
     config.set("annotation.palette_size", std::to_string(paletteSize_));
+
+    // 主题（v2.6）：回写用户设定值（system/dark/light），不写解析结果。
+    config.set("appearance.theme", themeSetting_.toStdString());
 
     // OCR（M5）：只回写非机密项；api_key 由用户在配置里自填，
     // 程序不主动覆写（避免把已配置的密钥清空）。

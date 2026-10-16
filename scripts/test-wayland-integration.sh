@@ -51,6 +51,12 @@ cat > "$HOME_DIR/.config/jie2/history.txt" <<EOF
 /tmp/hist-1.png|20261016-100000|120|80
 /tmp/hist-2.png|20261016-100001|80|120
 EOF
+# 主题固定深色：本脚本的条带像素断言基于深色背景（sum<150）。
+# 容器 gsettings 返回 'default'（解析为浅色），不固定主题会让断言
+# 随环境漂移 —— 与 test-clothesline-linux.sh 同样的处置（实测教训）。
+cat > "$HOME_DIR/.config/jie2/jie2.conf" <<EOF
+appearance.theme=dark
+EOF
 chown -R "$TEST_USER" "$HOME_DIR/.config"
 rm -f "$HOME_DIR/.config/jie2/line-items.txt"
 

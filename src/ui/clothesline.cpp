@@ -22,10 +22,8 @@ namespace jie2::ui {
 
 namespace {
 
-const QColor kStripBg(26, 26, 30, 242);
-const QColor kRopeColor(150, 150, 160);
-const QColor kCardBg(40, 40, 46);
-const QColor kCardHover(58, 58, 66);
+// 条带配色已改为按主题解析（Clothesline::StripColors，v2.6）——
+// 深浅两套在此定义默认值；kAccent 作为强调色深浅通用。
 const QColor kAccent(64, 158, 255);
 
 } // namespace
@@ -38,6 +36,8 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_ShowWithoutActivating, true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+
+    setDarkTheme(true);  // 默认深色（与既有观感一致）
 
     pollTimer_ = new QTimer(this);
     connect(pollTimer_, &QTimer::timeout, this, &Clothesline::tick);
@@ -68,6 +68,20 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
     });
 
     conceal();  // 初始收起
+}
+
+void Clothesline::setDarkTheme(bool dark) {
+    darkTheme_ = dark;
+    if (dark) {
+        colors_ = StripColors{QColor(26, 26, 30, 242), QColor(150, 150, 160),
+                              QColor(40, 40, 46), QColor(58, 58, 66),
+                              QColor(200, 200, 205), QColor(150, 150, 155)};
+    } else {
+        colors_ = StripColors{QColor(246, 246, 250, 245), QColor(120, 120, 132),
+                              QColor(226, 228, 234), QColor(206, 210, 220),
+                              QColor(60, 62, 70), QColor(120, 122, 132)};
+    }
+    update();
 }
 
 void Clothesline::setEntries(std::vector<core::HistoryEntry> entries) {
@@ -238,15 +252,15 @@ void Clothesline::paintEvent(QPaintEvent*) {
 
     // 底板
     painter.setPen(Qt::NoPen);
-    painter.setBrush(kStripBg);
+    painter.setBrush(colors_.stripBg);
     painter.drawRect(rect());
 
     // 晾衣绳
-    painter.setPen(QPen(kRopeColor, 2));
+    painter.setPen(QPen(colors_.rope, 2));
     painter.drawLine(ropeRect().topLeft(), ropeRect().topRight());
 
     if (entries_.empty()) {
-        painter.setPen(QColor(200, 200, 205));
+        painter.setPen(colors_.emptyText);
         painter.setFont(QFont(QString(), 12));
         painter.drawText(rect().adjusted(0, 40, 0, 0), Qt::AlignHCenter | Qt::AlignTop,
                          QStringLiteral("衣架还空着 —— 截一张图，它会立刻挂在这里"));
@@ -257,13 +271,13 @@ void Clothesline::paintEvent(QPaintEvent*) {
         const QRect card = itemRect(i);
 
         // 挂线（从绳子到卡片）
-        painter.setPen(QPen(kRopeColor, 1));
+        painter.setPen(QPen(colors_.rope, 1));
         painter.drawLine(QPoint(card.center().x(), ropeRect().bottom()),
                          QPoint(card.center().x(), card.top()));
 
         // 卡片底
         painter.setPen(Qt::NoPen);
-        painter.setBrush(i == hoverIndex_ ? kCardHover : kCardBg);
+        painter.setBrush(i == hoverIndex_ ? colors_.cardHover : colors_.cardBg);
         painter.drawRoundedRect(card, 8, 8);
 
         // 缩略图（等比适配，居中）
@@ -284,7 +298,7 @@ void Clothesline::paintEvent(QPaintEvent*) {
             painter.drawImage(target, item.thumbnail);
             painter.setClipping(false);
         } else {
-            painter.setPen(QColor(150, 150, 155));
+            painter.setPen(colors_.failText);
             painter.drawText(card, Qt::AlignCenter, QStringLiteral("读取失败"));
         }
 

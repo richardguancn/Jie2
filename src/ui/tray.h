@@ -14,6 +14,7 @@
 #include "core/capability.h"
 #include "core/capture_history.h"
 #include "core/ocr.h"
+#include "core/shortcut_map.h"
 #include "platform/platform.h"
 #include "ui/pin_window.h"  // PinWindow::DismissAction（Esc 行为配置）
 
@@ -254,6 +255,14 @@ private:
 
     // ---- 文字识别（M5）----
     core::OcrConfig ocrConfig_;
+
+    // ---- 主题（v2.6：跟随系统）与自定义快捷键（v2.11.3）----
+    QString themeSetting_ = QStringLiteral("system");
+    bool darkTheme_ = true;                       // 解析后的实际主题
+    /// 应用内快捷键映射（v2.11.3）。默认即出厂绑定 —— 即便配置读取
+    /// 失败（或未来新增 CLI 路径忘了 loadConfig），字母快捷键仍然可用。
+    core::ShortcutMap shortcutMap_ = core::ShortcutMap::defaults();
+    bool eraserUndoable_ = true;                  // 橡皮擦删除可撤销（v2.6 可禁用）
 
     // ---- 命令行覆盖（M6）----
     CaptureOverrides overrides_;

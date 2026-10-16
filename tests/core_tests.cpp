@@ -11,6 +11,7 @@
 #include "core/geometry.h"
 #include "core/image_buffer.h"
 #include "core/image_ops.h"
+#include "core/shortcut_map.h"
 #include "core/snap.h"
 
 namespace {
@@ -659,6 +660,200 @@ void testAnnotation() {
         CHECK(doc.add(ellipseMosaic));
         CHECK(doc.items().front().style.ellipseShape);
     }
+
+    // 快照撤销（v2.6 语义升级）：擦除也可撤销（默认）。
+    {
+        AnnotationDocument doc;
+        Annotation item;
+        item.tool = AnnotationTool::Rect;
+        item.points = {Point{10, 10}, Point{60, 60}};
+        CHECK(doc.add(item));
+        CHECK(doc.size() == 1);
+
+        CHECK(doc.eraseIntersecting(Rect{15, 15, 10, 10}) == 1);
+        CHECK(doc.size() == 0);
+        CHECK(doc.canUndo());
+        CHECK(doc.undo());       // 撤销擦除
+        CHECK(doc.size() == 1);  // 标注回来了
+        CHECK(doc.redo());       // 重做擦除
+        CHECK(doc.size() == 0);
+    }
+
+    // 禁用二次编辑（annotation.eraser_disable_reedit）：
+    // 擦除不可恢复，其它编辑的撤销/重做不受影响。
+    {
+        AnnotationDocument doc;
+        auto push = [&doc](int x, int y) {
+            Annotation item;
+            item.tool = AnnotationTool::Rect;
+            item.points = {Point{x, y}, Point{x + 20, y + 20}};
+            doc.add(std::move(item));
+        };
+        push(0, 0);      // A：(0,0)-(20,20)
+        push(100, 100);  // B：(100,100)-(120,120)
+        CHECK(doc.size() == 2);
+
+        doc.setEraserUndoable(false);
+        CHECK(!doc.eraserUndoable());
+        CHECK(doc.eraseIntersecting(Rect{-5, -5, 40, 40}) == 1);  // 擦掉 A
+        CHECK(doc.size() == 1);
+
+        // 撤销不能复活 A（它已从整个历史里剔除）。
+        CHECK(doc.undo());
+        CHECK(doc.size() == 0);
+        // 反复撤销/重做循环也不会让 A 回来。
+        for (int i = 0; i < 4; ++i) {
+            doc.undo();
+            doc.redo();
+            CHECK(doc.size() <= 1);  // 永远看不到"两条都在"
+        }
+        // 回到最新状态：B 仍在。
+        while (doc.canRedo()) {
+            doc.redo();
+        }
+        CHECK(doc.size() == 1);
+        CHECK(doc.items().front().boundingRect().x == 100);  // 是 B
+    }
+
+    // 平移进入快照历史：平移可撤销。
+    {
+        AnnotationDocument doc;
+        Annotation item;
+        item.tool = AnnotationTool::Rect;
+        item.points = {Point{10, 10}, Point{30, 30}};
+        CHECK(doc.add(item));
+        CHECK(doc.translateAt(0, 5, 0));
+        CHECK(doc.items().front().boundingRect().x == 15);
+        CHECK(doc.undo());
+        CHECK(doc.items().front().boundingRect().x == 10);  // 平移被撤销
+        CHECK(doc.redo());
+        CHECK(doc.items().front().boundingRect().x == 15);
+    }
+
+    // 手势支持（v2.3 / v2.11）：replacePoints 的两种入栈模式与 commitPending。
+    {
+        AnnotationDocument doc;
+        Annotation item;
+        item.tool = AnnotationTool::Rect;
+        item.points = {Point{10, 10}, Point{30, 30}};
+        CHECK(doc.add(item));
+
+        // record=true：立即入历史（单步缩放，可撤销）。
+        CHECK(doc.replacePoints(
+            0, std::vector<Point>{Point{0, 0}, Point{40, 40}}, true));
+        CHECK(doc.items().front().boundingRect().width == 40);
+        CHECK(doc.undo());
+        CHECK(doc.items().front().boundingRect().width == 20);
+        CHECK(doc.redo());
+
+        // record=false：中间帧不入历史；commitPending 收尾一次性入历史。
+        for (int i = 0; i < 3; ++i) {
+            std::vector<Point> points = doc.items().front().points;
+            points.front().x -= 1;  // 模拟实时拖动帧
+            CHECK(doc.replacePoints(0, points, false));
+        }
+        CHECK(!doc.canRedo());
+        CHECK(doc.items().front().points.front().x == -3);
+        doc.commitPending();
+        CHECK(!doc.canRedo());
+        CHECK(doc.undo());
+        CHECK(doc.items().front().points.front().x == 0);  // 一步回到手势前
+        CHECK(doc.redo());
+        CHECK(doc.items().front().points.front().x == -3);
+
+        // 非法参数：越界索引 / 空点集。
+        CHECK(!doc.replacePoints(5, std::vector<Point>{Point{0, 0}}, true));
+        CHECK(!doc.replacePoints(0, {}, true));
+        // 无挂起修改时 commitPending 是空操作（不产生多余撤销点）。
+        const bool canUndoBefore = doc.canUndo();
+        doc.commitPending();
+        CHECK(doc.canUndo() == canUndoBefore);
+    }
+}
+
+void testRegionHit() {
+    using namespace jie2::core;
+
+    // 轴对齐快路径：与旧"有重叠面积"语义一致（贴边不算）。
+    CHECK((regionIntersectsBox(Rect{0, 0, 10, 10}, 0, false, Rect{5, 5, 10, 10})));
+    CHECK((!regionIntersectsBox(Rect{0, 0, 10, 10}, 0, false, Rect{10, 0, 5, 5})));
+    CHECK((!regionIntersectsBox(Rect{}, 0, false, Rect{0, 0, 5, 5})));
+
+    // 旋转（v2.6）：轴对齐时不相交，旋转 45° 后覆盖。
+    CHECK((!regionIntersectsBox(Rect{0, 0, 10, 2}, 0, false, Rect{3, -4, 4, 4})));
+    CHECK((regionIntersectsBox(Rect{0, 0, 10, 2}, 45, false, Rect{3, -4, 4, 4})));
+
+    // 椭圆：内接多边形近似 —— 明确在椭圆内的命中、明显在外的不命中。
+    CHECK((regionIntersectsBox(Rect{0, 0, 20, 20}, 0, true, Rect{16, 16, 3, 3})));
+    CHECK((!regionIntersectsBox(Rect{0, 0, 20, 20}, 0, true, Rect{21, 21, 3, 3})));
+    // 椭圆四角（矩形内但椭圆外）：不命中（与椭圆马赛克的语义一致）。
+    CHECK((!regionIntersectsBox(Rect{0, 0, 20, 20}, 0, true, Rect{0, 0, 2, 2})));
+
+    // 退化包围盒（零高，如水平箭头）：贴边即命中 ——
+    // 修复旧实现里"退化包围盒永远擦不掉"的隐性缺陷。
+    CHECK((regionIntersectsBox(Rect{0, 0, 10, 10}, 0, false, Rect{2, 10, 6, 0})));
+
+    // 橡皮擦带旋转参数的整段调用。
+    {
+        AnnotationDocument doc;
+        Annotation item;
+        item.tool = AnnotationTool::Rect;
+        item.points = {Point{3, -4}, Point{7, 0}};  // bbox {3,-4,4,4}
+        CHECK(doc.add(item));
+        CHECK(doc.eraseIntersecting(Rect{0, 0, 10, 2}, 0, false) == 0);   // 不转擦不到
+        CHECK(doc.eraseIntersecting(Rect{0, 0, 10, 2}, 45, false) == 1);  // 转 45° 命中
+        CHECK(doc.size() == 0);
+    }
+}
+
+void testShortcutMap() {
+    using namespace jie2::core;
+
+    ShortcutSpec spec;
+    CHECK(parseShortcutSpec("x", &spec));
+    CHECK(spec.key == 'X');
+    CHECK(spec.modifiers == 0u);
+    CHECK(parseShortcutSpec("shift+b", &spec));
+    CHECK(spec.key == 'B');
+    CHECK(spec.modifiers == kScShift);
+    CHECK(parseShortcutSpec("ctrl+alt+p", &spec));
+    CHECK(spec.key == 'P');
+    CHECK(spec.modifiers == (kScCtrl | kScAlt));
+    CHECK(parseShortcutSpec("none", &spec));
+    CHECK(!spec.enabled());
+    CHECK(parseShortcutSpec("", &spec));
+    CHECK(!spec.enabled());
+    CHECK(!parseShortcutSpec("shift+", &spec));
+    CHECK(!parseShortcutSpec("ab", &spec));
+    CHECK(!parseShortcutSpec("f13", &spec));
+
+    const ShortcutMap defaults = ShortcutMap::defaults();
+    CHECK(defaults.matches("tool.text", 'T', 0));
+    CHECK(!defaults.matches("tool.text", 'T', kScCtrl));  // 修饰键必须精确
+    CHECK(defaults.matches("arrow.reverse", 'B', kScShift));
+    CHECK(!defaults.matches("arrow.reverse", 'B', 0));
+    CHECK(defaults.get("tool.text").enabled());  // 默认绑定存在
+    CHECK(!defaults.matches("tool.text", '1', 0));  // 数字键不是本表的动作
+
+    Config config;
+    config.set("shortcut.tool.text", "x");
+    config.set("shortcut.style.dashed", "none");
+    std::string warning;
+    const ShortcutMap custom = ShortcutMap::fromConfig(config, &warning);
+    CHECK(warning.empty());
+    CHECK(custom.matches("tool.text", 'X', 0));
+    CHECK(!custom.matches("tool.text", 'T', 0));  // 旧键已让位
+    CHECK(!custom.get("style.dashed").enabled());
+    CHECK(!custom.matches("style.dashed", 'D', 0));
+    CHECK(custom.matches("tool.number", 'N', 0));  // 未配置的动作保留默认
+
+    // 非法值：保留默认并给出警告。
+    Config bad;
+    bad.set("shortcut.tool.text", "shift+");
+    std::string badWarning;
+    const ShortcutMap fallback = ShortcutMap::fromConfig(bad, &badWarning);
+    CHECK(!badWarning.empty());
+    CHECK(fallback.matches("tool.text", 'T', 0));
 }
 
 void testEllipseMaskOps() {
@@ -742,6 +937,8 @@ int main() {
     testCaptureHistory();
     testSnap();
     testAnnotation();
+    testRegionHit();
+    testShortcutMap();
     testEllipseMaskOps();
 
     if (g_failures == 0) {

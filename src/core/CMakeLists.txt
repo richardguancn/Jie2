@@ -12,6 +12,7 @@ add_library(jie2_core STATIC
     image_buffer.cpp
     image_ops.cpp
     ocr.cpp
+    shortcut_map.cpp
     snap.cpp
 )
 

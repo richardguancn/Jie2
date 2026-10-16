@@ -50,6 +50,10 @@ public:
     int itemCount() const { return static_cast<int>(entries_.size()); }
     bool isRevealed() const { return revealed_; }
 
+    /// 主题（专业版对齐项 v2.6：主题色跟随系统主题）。
+    /// 深色 = 既有观感；浅色给条带整套浅色板。
+    void setDarkTheme(bool dark);
+
 signals:
     /// 用户点击卡片，**请求**把该图复制到剪贴板。
     ///
@@ -112,6 +116,18 @@ private:
     bool pressedOnCard_ = false;   // 左键按在卡片上（等待判定是点击还是拖拽）
     QPoint pressPos_;
     int pressedIndex_ = -1;
+
+    // ---- 主题色（v2.6）----
+    struct StripColors {
+        QColor stripBg;    // 条带底板
+        QColor rope;       // 晾衣绳与挂线
+        QColor cardBg;     // 卡片底
+        QColor cardHover;  // 悬停卡片底
+        QColor emptyText;  // "衣架还空着"文案
+        QColor failText;   // "读取失败"文案
+    };
+    StripColors colors_;
+    bool darkTheme_ = true;
 
     static constexpr int kStripHeight = 150;  // 展开后的条高（逻辑点）
     static constexpr int kCardWidth = 150;    // 卡片宽（逻辑点）

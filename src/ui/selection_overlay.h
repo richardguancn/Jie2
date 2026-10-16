@@ -7,16 +7,33 @@
 #include <QString>
 #include <QStringList>
 
+#include <array>
 #include <functional>
 #include <vector>
 
 #include "core/annotation.h"
+#include "core/shortcut_map.h"
 #include "core/snap.h"
 
 class QLineEdit;
 class QScreen;
 
 namespace jie2::ui {
+
+/// 重新抓屏回调（F5 用）。返回空 QPixmap 表示失败。
+using OverlayRecaptureFn = std::function<QPixmap()>;
+
+/// 遮罩构造参数集（会随专业版对齐项继续增长，独立成结构体避免参数列表失控）。
+/// 定义在类外：作为默认实参使用时不受"类内默认成员初始化器"限制。
+struct SelectionOverlayOptions {
+    QStringList historyPaths;   // 截图历史（旧的在前），, / . 回放
+    OverlayRecaptureFn recapture;  // 空则 F5 无效
+    std::vector<core::Rect> snapCandidates;  // 可吸附窗口（本屏逻辑坐标）
+    int paletteSize = 6;        // 调色板可用颜色数量（v2.4 对齐项）
+    core::ShortcutMap shortcuts = core::ShortcutMap::defaults();  // v2.11.3
+    bool darkTheme = true;      // 主题（v2.6：跟随系统）
+    bool eraserUndoable = true; // 橡皮擦删除可撤销（v2.6：可禁用二次编辑）
+};
 
 /// 截图选择遮罩（M1）。
 ///
@@ -52,29 +69,22 @@ public:
     };
 
     /// 重新抓屏回调（F5 用）。返回空 QPixmap 表示失败。
-    using RecaptureFn = std::function<QPixmap()>;
+    using RecaptureFn = OverlayRecaptureFn;
+
+    /// 构造参数集（见命名空间级 SelectionOverlayOptions）。
+    using Options = SelectionOverlayOptions;
 
     /// screen 决定遮罩覆盖哪块屏幕；传 nullptr 时用主屏。
     /// （显式关联 QScreen 而不是只给 QRect：macOS 上无边框窗口需要
     ///  windowHandle()->setScreen() 才会稳定落到目标屏。）
-    /// historyPaths 为截图历史（旧的在前、新的在后），用于 , / . 回放。
-    /// recapture 为空时 F5 无效。
-    /// snapCandidates 为可吸附的窗口矩形（本屏逻辑坐标），空则不启用吸附。
     SelectionOverlay(QPixmap frozen, double scaleFactor, QScreen* screen,
-                     QStringList historyPaths = {},
-                     RecaptureFn recapture = {},
-                     std::vector<core::Rect> snapCandidates = {},
-                     int paletteSize = 6,
+                     Options options = {},
                      QWidget* parent = nullptr);
 
     /// 模态运行，返回用户选择结果。
     /// accepted 为 false 表示用户取消（静默，不是错误）。
-    /// paletteSize 为调色板可用颜色数量（专业版对齐项，可配置）。
     static Outcome run(const QPixmap& frozen, double scaleFactor, QScreen* screen,
-                       QStringList historyPaths = {},
-                       RecaptureFn recapture = {},
-                       std::vector<core::Rect> snapCandidates = {},
-                       int paletteSize = 6);
+                       Options options = {});
 
     const Outcome& outcome() const { return outcome_; }
 
@@ -202,19 +212,63 @@ private:
     /// 初值：马克笔默认黄（1），其余默认红（0）。
     int colorIndexByTool_[16] = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int currentWidth_ = 3;          // 线宽（物理像素）
-    bool dashed_ = false;           // 虚线样式（D 键切换）
-    int cornerRadius_ = 0;          // 圆角矩形半径（R 键循环 0/8/16/24）
-    bool ellipseShape_ = false;     // 椭圆形状（O 键；马克笔/马赛克/模糊）
-    bool arrowBothEnds_ = false;    // 双向箭头（B 键）
-    bool arrowReverse_ = false;     // 反向箭头（Shift+B 键）
+    bool dashed_ = false;           // 虚线样式（快捷键可配）
+    int cornerRadius_ = 0;          // 圆角矩形半径（快捷键循环 0/8/16/24）
+    bool ellipseShape_ = false;     // 椭圆形状（快捷键；马克笔/马赛克/模糊/橡皮擦）
+    bool arrowBothEnds_ = false;    // 双向箭头
+    bool arrowReverse_ = false;     // 反向箭头
     int paletteSize_ = 6;           // 调色板颜色数量（专业版对齐项，可配置）
+    core::ShortcutMap shortcuts_;   // 应用内快捷键映射（v2.11.3 可配置）
+    int eraserAngle_ = 0;           // 橡皮擦区域旋转角（v2.6：Shift+] / Shift+[）
     bool drawing_ = false;          // 正在绘制一条标注
     bool erasing_ = false;          // 橡皮擦拖拽中
     int selectedIndex_ = -1;        // 自由选中（v2.8）：当前选中的标注索引（-1=无）
+
+    // ---- 选中标注的移动 / 缩放手势（专业版对齐项 v2.3 / v2.11）----
+    //
+    // v2.3："中心点缩放（按住 Ctrl）；等比例缩放（按住 Shift）"——
+    //      拖动选中矩形/椭圆的四角手柄进行缩放，修饰键实时生效。
+    // v2.11："选中矩形/椭圆后 Shift+滚轮缩放"（见 wheelEvent）。
+    // 手势期间用 replacePoints(record=false) 实时刷新，收尾 commitPending()
+    // 一次性入历史（中间帧不污染撤销栈）。
+    bool movingSelection_ = false;      // 拖动移动中
+    bool resizingSelection_ = false;    // 角柄缩放中
+    QPoint gestureStartLogical_;        // 移动手势起点（逻辑点）
+    std::vector<core::Point> gestureBasePoints_;  // 手势起点的点集快照
+    core::Rect gestureBaseBounds_;      // 手势起点的包围盒（图像像素）
+    QPoint gestureGrabCorner_;          // 抓手的角柄（图像像素，box 角坐标）
+    bool gestureCenterAnchor_ = false;  // 缩放基准：中心 or 对角
+    bool gestureProportional_ = false;  // 缩放是否等比（Shift）
+
+    /// 选中标注的四角手柄（图像像素坐标；与绘制一致 = 包围盒外扩 4px）。
+    std::array<QPoint, 4> selectedHandles() const;
+    /// 命中所选手柄（图像坐标比较，pad 随缩放换算；未选中返回 false）。
+    bool hitSelectedHandle(const QPoint& logicalPos, QPoint* corner) const;
+    void beginMoveSelection(const QPoint& logicalPos);
+    void beginResizeSelection(const QPoint& corner);
+    void updateMoveSelection(const QPoint& logicalPos);
+    void updateResizeSelection(const QPoint& logicalPos,
+                               Qt::KeyboardModifiers mods);
+    void finishSelectionGesture();
     core::Annotation draft_;        // 绘制中的草稿
     QImage composedBase_;           // 底图 + 已烘焙的像素效果（预览用）
     QPixmap displayPixmap_;         // composedBase_ 的 QPixmap 缓存
     bool composedDirty_ = true;     // 需要重建 composedBase_
+
+    // ---- 主题（v2.6：主题色跟随系统主题）----
+    //
+    // 只主题化"自绘界面色板"：工具条/提示条/toast 的底色与前景。
+    // 刻意不动：选区变暗（黑色半透明，与底色无关）、吸附高亮与工具条
+    // 强调色（accent 蓝在深浅两色上都保持可辨识）。
+    struct ChromeColors {
+        QColor panelBg;     // 工具条与提示条底板
+        QColor buttonBg;    // 普通按钮
+        QColor buttonFg;    // 普通按钮文字
+        QColor disabledBg;  // 禁用按钮
+        QColor disabledFg;
+        QColor textFg;      // 提示条 / toast 文字
+    };
+    ChromeColors chrome_;
 };
 
 } // namespace jie2::ui

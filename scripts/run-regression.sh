@@ -51,6 +51,10 @@ if [ "$BATCH" = "all" ] || [ "$BATCH" = "B" ]; then
     item "衣架动画逐帧" 120 "bash scripts/verify-clothesline-animation.sh | grep -q '^PASS'"
     item "M6 CLI" 120 "bash scripts/test-cli-linux.sh | grep -q '^PASS'"
     item "调色板配置" 120 "bash scripts/test-palette-linux.sh | grep -q '^PASS'"
+    item "自定义快捷键" 120 "bash scripts/test-shortcuts-linux.sh | grep -q '^PASS'"
+    item "橡皮擦增强" 150 "bash scripts/test-eraser-tools-linux.sh | grep -q '^PASS'"
+    item "标注拖动/缩放" 150 "bash scripts/test-annotate-scale-linux.sh | grep -q '^PASS'"
+    item "主题跟随系统" 150 "bash scripts/test-theme-linux.sh | grep -q '^PASS'"
     item "Wayland 热键门户" 120 "bash scripts/test-wayland-portal.sh | grep -q '^PASS'"
     item "Wayland 截图门户" 120 "bash scripts/test-wayland-capture.sh | grep -q '^PASS'"
 fi

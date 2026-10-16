@@ -1,6 +1,7 @@
 #include "ui/selection_overlay.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QApplication>
 #include <QClipboard>
@@ -39,7 +40,8 @@ constexpr int kToolbarGap = 6;
 const QColor kAccent(64, 158, 255);
 const QColor kSnapColor(120, 230, 150);  // 吸附指示色（区别于普通选区边框）
 const QColor kDim(0, 0, 0, 110);
-const QColor kHintBg(24, 24, 28, 200);
+// 提示条/工具条底色已改为按主题解析（SelectionOverlay::ChromeColors），
+// 不再用文件级常量 —— 这里保留注释说明迁移原因，避免误加回常量。
 
 QFont labelFont() {
     QFont font;
@@ -52,6 +54,24 @@ QFont smallFont() {
     QFont font;
     font.setPointSize(9);
     return font;
+}
+
+/// Qt 修饰键 → core::ShortcutMap 的位组合。
+unsigned shortcutModifiers(Qt::KeyboardModifiers mods) {
+    unsigned mask = 0;
+    if (mods.testFlag(Qt::ControlModifier)) {
+        mask |= core::kScCtrl;
+    }
+    if (mods.testFlag(Qt::AltModifier)) {
+        mask |= core::kScAlt;
+    }
+    if (mods.testFlag(Qt::ShiftModifier)) {
+        mask |= core::kScShift;
+    }
+    if (mods.testFlag(Qt::MetaModifier)) {
+        mask |= core::kScMeta;
+    }
+    return mask;
 }
 
 /// 由拖拽两点得到选区矩形。
@@ -87,18 +107,31 @@ QRect drawTag(QPainter& painter, const QPoint& topLeft, const QString& text,
 } // namespace
 
 SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
-                                   QScreen* screen, QStringList historyPaths,
-                                   RecaptureFn recapture,
-                                   std::vector<core::Rect> snapCandidates,
-                                   int paletteSize, QWidget* parent)
+                                   QScreen* screen, Options options,
+                                   QWidget* parent)
     : QDialog(parent),
       frozen_(std::move(frozen)),
       scaleFactor_(scaleFactor > 0.0 ? scaleFactor : 1.0),
       screen_(screen),
-      historyPaths_(std::move(historyPaths)),
-      recapture_(std::move(recapture)),
-      snapCandidates_(std::move(snapCandidates)),
-      paletteSize_(paletteSize) {
+      historyPaths_(std::move(options.historyPaths)),
+      recapture_(std::move(options.recapture)),
+      snapCandidates_(std::move(options.snapCandidates)),
+      paletteSize_(options.paletteSize),
+      shortcuts_(options.shortcuts) {
+    // 主题：深色 = 现有观感（默认）；浅色给自绘面板整套浅色板。
+    if (options.darkTheme) {
+        chrome_ = ChromeColors{QColor(28, 28, 32, 235), QColor(70, 70, 78),
+                               QColor(232, 232, 232), QColor(52, 52, 58),
+                               QColor(130, 130, 138), QColor(235, 235, 235)};
+    } else {
+        chrome_ = ChromeColors{QColor(244, 245, 248, 238), QColor(224, 227, 234),
+                               QColor(32, 35, 42), QColor(235, 236, 240),
+                               QColor(150, 152, 158), QColor(28, 30, 36)};
+    }
+
+    // 橡皮擦删除是否可撤销（v2.6："对橡皮擦禁用二次编辑"配置）。
+    annotations_.setEraserUndoable(options.eraserUndoable);
+
     frozenImage_ = frozen_.toImage();
     screenImage_ = frozenImage_;
 
@@ -130,13 +163,8 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
 SelectionOverlay::Outcome SelectionOverlay::run(const QPixmap& frozen,
                                                 double scaleFactor,
                                                 QScreen* screen,
-                                                QStringList historyPaths,
-                                                RecaptureFn recapture,
-                                                std::vector<core::Rect> snapCandidates,
-                                                int paletteSize) {
-    SelectionOverlay overlay(frozen, scaleFactor, screen, std::move(historyPaths),
-                             std::move(recapture), std::move(snapCandidates),
-                             paletteSize);
+                                                Options options) {
+    SelectionOverlay overlay(frozen, scaleFactor, screen, std::move(options));
     const int code = overlay.exec();
     Outcome result = overlay.outcome();
     result.accepted = (code == QDialog::Accepted) && !result.selection.isEmpty();
@@ -251,6 +279,8 @@ void SelectionOverlay::recapture() {
 }
 
 void SelectionOverlay::showToast(const QString& text) {
+    // toast 是瞬态绘制，测试与排障读不到 —— 同步写一行日志作为锚点。
+    qInfo().noquote() << QStringLiteral("[jie2] %1").arg(text);
     toast_ = text;
     QTimer::singleShot(1800, this, [this]() {
         toast_.clear();
@@ -427,14 +457,15 @@ void SelectionOverlay::paintAnnotations(QPainter& painter,
         }
     }
 
-    // 自由选中（专业版 v2.8）：给选中的标注描虚线包围盒 + 四角标记。
+    // 自由选中（专业版 v2.8）：给选中的标注描虚线包围盒 + 四角手柄。
     // 坐标即源图像素（与上方标注同一变换）。
+    // 四角手柄只在可缩放的矩形/椭圆上绘制（它们是缩放拖拽的把手，
+    // v2.3；画在其他工具上会给出错误的交互暗示）。
     if (selectedIndex_ >= 0 &&
         static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
-        const core::Rect bounds = annotations_
-                                      .items()[static_cast<std::size_t>(
-                                          selectedIndex_)]
-                                      .boundingRect();
+        const core::Annotation& selectedItem =
+            annotations_.items()[static_cast<std::size_t>(selectedIndex_)];
+        const core::Rect bounds = selectedItem.boundingRect();
         painter.setBrush(Qt::NoBrush);
         QPen pen(QColor(64, 158, 255), 0);  // cosmetic：屏显恒定 1px
         pen.setStyle(Qt::DashLine);
@@ -443,15 +474,20 @@ void SelectionOverlay::paintAnnotations(QPainter& painter,
                          bounds.width + 8.0, bounds.height + 8.0);
         painter.drawRect(box);
 
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(64, 158, 255));
-        constexpr double kMark = 6.0;
-        const QPointF corners[] = {box.topLeft(), box.topRight(),
-                                   box.bottomLeft(), box.bottomRight()};
-        for (const QPointF& corner : corners) {
-            painter.drawRect(
-                QRectF(corner.x() - kMark / 2.0, corner.y() - kMark / 2.0,
-                       kMark, kMark));
+        const bool scalable =
+            selectedItem.tool == core::AnnotationTool::Rect ||
+            selectedItem.tool == core::AnnotationTool::Ellipse;
+        if (scalable) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(64, 158, 255));
+            constexpr double kMark = 6.0;
+            const QPointF corners[] = {box.topLeft(), box.topRight(),
+                                       box.bottomLeft(), box.bottomRight()};
+            for (const QPointF& corner : corners) {
+                painter.drawRect(
+                    QRectF(corner.x() - kMark / 2.0, corner.y() - kMark / 2.0,
+                           kMark, kMark));
+            }
         }
     }
     painter.restore();
@@ -512,10 +548,196 @@ void SelectionOverlay::handleSelectClick(const QPoint& logicalPos) {
                    .arg(hit + 1)
                    .arg(items.size())
                    .arg(tool);
-        showToast(QStringLiteral("已选中「%1」 · Delete 删除 · 方向键微移").arg(tool));
+        showToast(QStringLiteral("已选中「%1」 · 拖动移动 · 角柄缩放 · Delete 删除")
+                      .arg(tool));
     } else if (!items.empty()) {
         qInfo().noquote() << QStringLiteral("[jie2] 自由选中：未命中（点击处无标注）");
         showToast(QStringLiteral("点击处没有标注"));
+    }
+    update();
+}
+
+// ---- 选中标注的移动 / 缩放手势（专业版对齐项 v2.3 / v2.11）----
+
+std::array<QPoint, 4> SelectionOverlay::selectedHandles() const {
+    if (selectedIndex_ < 0 ||
+        static_cast<std::size_t>(selectedIndex_) >= annotations_.size()) {
+        return {};
+    }
+    const core::Rect b = annotations_
+                             .items()[static_cast<std::size_t>(selectedIndex_)]
+                             .boundingRect();
+    // 与绘制一致：包围盒外扩 4px（图像像素）。
+    return {QPoint(b.x - 4, b.y - 4),
+            QPoint(b.x + b.width + 4, b.y - 4),
+            QPoint(b.x - 4, b.y + b.height + 4),
+            QPoint(b.x + b.width + 4, b.y + b.height + 4)};
+}
+
+bool SelectionOverlay::hitSelectedHandle(const QPoint& logicalPos,
+                                         QPoint* corner) const {
+    if (selectedIndex_ < 0 ||
+        static_cast<std::size_t>(selectedIndex_) >= annotations_.size()) {
+        return false;
+    }
+    const auto handles = selectedHandles();
+    const QPoint img = imagePos(logicalPos);
+    const double scale = frozenPixelScale_ > 0.0 ? frozenPixelScale_ : 1.0;
+    const int pad = static_cast<int>(std::lround(12.0 * scale));
+    for (const QPoint& handle : handles) {
+        if (std::abs(img.x() - handle.x()) <= pad &&
+            std::abs(img.y() - handle.y()) <= pad) {
+            if (corner != nullptr) {
+                *corner = handle;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void SelectionOverlay::beginMoveSelection(const QPoint& logicalPos) {
+    movingSelection_ = true;
+    gestureStartLogical_ = logicalPos;
+    const core::Annotation& item =
+        annotations_.items()[static_cast<std::size_t>(selectedIndex_)];
+    gestureBasePoints_ = item.points;
+    gestureBaseBounds_ = item.boundingRect();  // 日志用（移动前后对照）
+}
+
+void SelectionOverlay::beginResizeSelection(const QPoint& corner) {
+    resizingSelection_ = true;
+    gestureGrabCorner_ = corner;
+    const core::Annotation& item =
+        annotations_.items()[static_cast<std::size_t>(selectedIndex_)];
+    gestureBasePoints_ = item.points;
+    gestureBaseBounds_ = item.boundingRect();
+    gestureCenterAnchor_ = false;
+    gestureProportional_ = false;
+}
+
+void SelectionOverlay::updateMoveSelection(const QPoint& logicalPos) {
+    if (selectedIndex_ < 0 ||
+        static_cast<std::size_t>(selectedIndex_) >= annotations_.size()) {
+        return;
+    }
+    // 位移按图像像素计算（手势起点到当前点），从快照重新推导全部点集。
+    const QPoint from = imagePos(gestureStartLogical_);
+    const QPoint to = imagePos(logicalPos);
+    const int dx = to.x() - from.x();
+    const int dy = to.y() - from.y();
+    std::vector<core::Point> points = gestureBasePoints_;
+    for (core::Point& point : points) {
+        point.x += dx;
+        point.y += dy;
+    }
+    annotations_.replacePoints(
+        static_cast<std::size_t>(selectedIndex_), std::move(points),
+        /*record=*/false);
+    rebuildComposed();
+    update();
+}
+
+void SelectionOverlay::updateResizeSelection(const QPoint& logicalPos,
+                                             Qt::KeyboardModifiers mods) {
+    if (selectedIndex_ < 0 ||
+        static_cast<std::size_t>(selectedIndex_) >= annotations_.size()) {
+        return;
+    }
+    const QPoint m = imagePos(logicalPos);
+    // box 坐标（与手柄绘制一致：包围盒外扩 4px）。
+    const double left = gestureBaseBounds_.x - 4;
+    const double top = gestureBaseBounds_.y - 4;
+    const double right =
+        gestureBaseBounds_.x + gestureBaseBounds_.width + 4;
+    const double bottom =
+        gestureBaseBounds_.y + gestureBaseBounds_.height + 4;
+    const double c0x = gestureGrabCorner_.x();
+    const double c0y = gestureGrabCorner_.y();
+    // 缩放基准（v2.3）：默认 = 对角（拖哪个角，对角固定）；
+    // 按住 Ctrl = 中心点缩放。
+    gestureCenterAnchor_ = mods.testFlag(Qt::ControlModifier);
+    double ax = 0.0;
+    double ay = 0.0;
+    if (gestureCenterAnchor_) {
+        ax = (left + right) / 2.0;
+        ay = (top + bottom) / 2.0;
+    } else {
+        ax = (c0x <= left + 0.5) ? right : left;
+        ay = (c0y <= top + 0.5) ? bottom : top;
+    }
+    double sx = 1.0;
+    double sy = 1.0;
+    if (std::abs(c0x - ax) >= 4.0) {
+        sx = (static_cast<double>(m.x()) - ax) / (c0x - ax);
+    }
+    if (std::abs(c0y - ay) >= 4.0) {
+        sy = (static_cast<double>(m.y()) - ay) / (c0y - ay);
+    }
+    // 防止缩到零/负（不允许翻转）；上限防止失控放大。
+    sx = std::clamp(sx, 0.05, 50.0);
+    sy = std::clamp(sy, 0.05, 50.0);
+    // 等比例缩放（v2.3）：Shift → 取主导轴的比例，两轴一致（保纵横比）。
+    gestureProportional_ = mods.testFlag(Qt::ShiftModifier);
+    if (gestureProportional_) {
+        const double factor =
+            std::abs(sx - 1.0) >= std::abs(sy - 1.0) ? sx : sy;
+        sx = factor;
+        sy = factor;
+    }
+    std::vector<core::Point> points = gestureBasePoints_;
+    for (core::Point& point : points) {
+        point.x = static_cast<int>(std::lround(ax + (point.x - ax) * sx));
+        point.y = static_cast<int>(std::lround(ay + (point.y - ay) * sy));
+    }
+    annotations_.replacePoints(
+        static_cast<std::size_t>(selectedIndex_), std::move(points),
+        /*record=*/false);
+    rebuildComposed();
+    update();
+}
+
+void SelectionOverlay::finishSelectionGesture() {
+    const bool wasMove = movingSelection_;
+    const bool wasResize = resizingSelection_;
+    movingSelection_ = false;
+    resizingSelection_ = false;
+    if (selectedIndex_ < 0 ||
+        static_cast<std::size_t>(selectedIndex_) >= annotations_.size()) {
+        return;
+    }
+    // 收尾：把手势中的实时修改一次性入历史（中间帧不进撤销栈）。
+    annotations_.commitPending();
+    const core::Rect now = annotations_
+                               .items()[static_cast<std::size_t>(selectedIndex_)]
+                               .boundingRect();
+    if (wasMove) {
+        qInfo().noquote()
+            << QStringLiteral("[jie2] 拖动选中标注：(%1,%2) %3x%4 → (%5,%6) %7x%8")
+                   .arg(gestureBaseBounds_.x)
+                   .arg(gestureBaseBounds_.y)
+                   .arg(gestureBaseBounds_.width)
+                   .arg(gestureBaseBounds_.height)
+                   .arg(now.x)
+                   .arg(now.y)
+                   .arg(now.width)
+                   .arg(now.height);
+        showToast(QStringLiteral("已移动选中标注"));
+    } else if (wasResize) {
+        const QString mode =
+            gestureCenterAnchor_
+                ? (gestureProportional_ ? QStringLiteral("中心+等比")
+                                        : QStringLiteral("中心"))
+                : (gestureProportional_ ? QStringLiteral("等比")
+                                        : QStringLiteral("对角"));
+        qInfo().noquote()
+            << QStringLiteral("[jie2] 拖动缩放：%1x%2 → %3x%4（基准：%5）")
+                   .arg(gestureBaseBounds_.width)
+                   .arg(gestureBaseBounds_.height)
+                   .arg(now.width)
+                   .arg(now.height)
+                   .arg(mode);
+        showToast(QStringLiteral("已缩放选中标注"));
     }
     update();
 }
@@ -686,19 +908,43 @@ void SelectionOverlay::paintEvent(QPaintEvent*) {
                                      height() - 72),
                               QSize(textSize.width() + 24, textSize.height() + 12));
         painter.setPen(Qt::NoPen);
-        painter.setBrush(kHintBg);
+        painter.setBrush(chrome_.panelBg);
         painter.drawRoundedRect(toastRect, 6, 6);
-        painter.setPen(Qt::white);
+        painter.setPen(chrome_.textFg);
         painter.drawText(toastRect, Qt::AlignCenter, toast_);
     }
 }
 
 void SelectionOverlay::paintHint(QPainter& painter) const {
     // 提示随可用功能变化：无历史时不提回放，无刷新回调时不提 F5。
+    // 快捷键标签**动态取自 ShortcutMap**（v2.11.3 可自定义）——
+    // 用户改了绑定，提示条同步反映；禁用（none）显示为 "—"。
+    const auto keyLabel = [this](const char* action) {
+        const core::ShortcutSpec spec = shortcuts_.get(action);
+        if (!spec.enabled()) {
+            return QStringLiteral("—");
+        }
+        QString label;
+        if ((spec.modifiers & core::kScCtrl) != 0) {
+            label += QStringLiteral("Ctrl+");
+        }
+        if ((spec.modifiers & core::kScAlt) != 0) {
+            label += QStringLiteral("Alt+");
+        }
+        if ((spec.modifiers & core::kScShift) != 0) {
+            label += QStringLiteral("Shift+");
+        }
+        label += QChar(static_cast<char16_t>(spec.key));
+        return label;
+    };
+
     QStringList parts;
     if (hasSelection_) {
         parts << QStringLiteral("选区内拖拽绘制 · 工具见工具条");
-        parts << QStringLiteral("D 虚线 · R 圆角 · O 椭圆 · B 箭头 · Ctrl+Z 撤销");
+        parts << QStringLiteral("快捷键：%1 虚线 / %2 圆角 / %3 椭圆 / %4 双向箭头")
+                     .arg(keyLabel("style.dashed"), keyLabel("style.corner"),
+                          keyLabel("shape.ellipse"), keyLabel("arrow.both"));
+        parts << QStringLiteral("[ ] 粗细 · Ctrl+Z 撤销");
         parts << QStringLiteral("回车 / 双击确认");
     } else {
         parts << QStringLiteral("拖拽选择截图区域");
@@ -718,9 +964,9 @@ void SelectionOverlay::paintHint(QPainter& painter) const {
     const QRect hintRect(QPoint((width() - textSize.width()) / 2, 16),
                          QSize(textSize.width() + 20, textSize.height() + 10));
     painter.setPen(Qt::NoPen);
-    painter.setBrush(kHintBg);
+    painter.setBrush(chrome_.panelBg);
     painter.drawRoundedRect(hintRect, 5, 5);
-    painter.setPen(QColor(235, 235, 235));
+    painter.setPen(chrome_.textFg);
     painter.drawText(hintRect, Qt::AlignCenter, text);
 }
 
@@ -885,9 +1131,9 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
                                     const QRect& selection) const {
     const QRect bar = toolbarRect(selection);
 
-    // 底板（比按钮群外扩 4pt，形成留白）
+    // 底板（比按钮群外扩 4pt，形成留白）。主题色（v2.6）。
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(28, 28, 32, 235));
+    painter.setBrush(chrome_.panelBg);
     painter.drawRoundedRect(bar.adjusted(-4, -4, 4, 4), 8, 8);
 
     painter.setFont(labelFont());
@@ -896,14 +1142,17 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
         const ToolbarItem& item = items[static_cast<std::size_t>(i)];
         const QRect rect = toolbarButtonRect(selection, i);
 
-        // 背景：当前工具高亮；保存按钮用主色；其余深灰。
-        QColor background(70, 70, 78);
-        QColor foreground(232, 232, 232);
+        // 背景：当前工具高亮；保存按钮用主色；其余用主题按钮色。
+        QColor background = chrome_.buttonBg;
+        QColor foreground = chrome_.buttonFg;
         bool enabled = true;
         switch (item.action) {
             case ToolbarButton::Tool:
                 background = (currentTool_ == item.tool) ? kAccent
-                                                         : QColor(70, 70, 78);
+                                                         : chrome_.buttonBg;
+                if (currentTool_ == item.tool) {
+                    foreground = Qt::white;
+                }
                 break;
             case ToolbarButton::Undo:
                 enabled = annotations_.canUndo();
@@ -922,8 +1171,8 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
                 break;
         }
         if (!enabled) {
-            background = QColor(52, 52, 58);
-            foreground = QColor(130, 130, 138);
+            background = chrome_.disabledBg;
+            foreground = chrome_.disabledFg;
         }
 
         painter.setPen(Qt::NoPen);
@@ -938,7 +1187,8 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
                 swatch.setAlpha(150);
             }
             painter.setBrush(swatch);
-            painter.setPen(QPen(QColor(240, 240, 240), 1));
+            // 描边跟随主题的前景色（浅色主题下白描边会看不见）。
+            painter.setPen(QPen(chrome_.buttonFg, 1));
             painter.drawRoundedRect(rect.adjusted(9, 7, -9, -7), 3, 3);
             continue;
         }
@@ -1093,8 +1343,45 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
     // 这是与 Snipaste 一致的心智模型：选完区域后直接在区域内画。
     if (hasSelection_ && !selectionRect_.isEmpty() &&
         selectionRect_.contains(event->pos())) {
+        // 选中手势优先（v2.3 / v2.11）：
+        //   - 按在四角手柄上 → 缩放手势（含 Ctrl=中心点、Shift=等比，拖动中实时生效）；
+        //   - 按在选中标注包围盒内 → 拖动移动。
+        // 手柄检查必须放在 Ctrl 分支之前：否则 Ctrl+拖手柄会被"自由选中"吃掉。
+        if (selectedIndex_ >= 0 &&
+            static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
+            const core::Annotation& selected =
+                annotations_.items()[static_cast<std::size_t>(selectedIndex_)];
+            const bool scalable = selected.tool == core::AnnotationTool::Rect ||
+                                  selected.tool == core::AnnotationTool::Ellipse;
+            QPoint corner;
+            if (scalable && hitSelectedHandle(event->pos(), &corner)) {
+                beginResizeSelection(corner);
+                return;
+            }
+            // 拖动移动的例外：文字/序号是"点一下就要落点"的工具、橡皮擦是
+            // 明确的"修改已有标注"工具 —— 这三者下按进包围盒不应被移动劫持，
+            // 否则选中着标注就没法再往它上面放文字或擦除。
+            const bool hijackableTool =
+                currentTool_ != core::AnnotationTool::Text &&
+                currentTool_ != core::AnnotationTool::Number &&
+                currentTool_ != core::AnnotationTool::Eraser;
+            if (hijackableTool &&
+                !event->modifiers().testFlag(Qt::ControlModifier)) {
+                const core::Rect bounds = selected.boundingRect();
+                const QPoint img = imagePos(event->pos());
+                constexpr int kMovePad = 4;
+                if (img.x() >= bounds.x - kMovePad &&
+                    img.x() <= bounds.x + bounds.width + kMovePad &&
+                    img.y() >= bounds.y - kMovePad &&
+                    img.y() <= bounds.y + bounds.height + kMovePad) {
+                    beginMoveSelection(event->pos());
+                    return;
+                }
+            }
+        }
         // Ctrl+左键 = 自由选中（专业版 v2.8）：命中已有标注则选中，
-        // 未命中则取消选中。选中后可 Delete 删除、方向键微移。
+        // 未命中则取消选中。选中后可拖动移动、角柄缩放、Delete 删除、
+        // 方向键微移。
         if (event->modifiers().testFlag(Qt::ControlModifier)) {
             handleSelectClick(event->pos());
             return;
@@ -1109,12 +1396,14 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
             return;
         }
         // 橡皮擦：按住拖动，擦过即整条删除（不产生新标注）。
+        // 区域形状跟随"椭圆形状"（O 键）；区域角度由 Shift+[ ] 调整（v2.6）。
         if (currentTool_ == core::AnnotationTool::Eraser) {
             erasing_ = true;
             const QPoint img = imagePos(event->pos());
             const int half = currentWidth_ * 4;
             const std::size_t removed = annotations_.eraseIntersecting(
-                core::Rect{img.x() - half, img.y() - half, half * 2, half * 2});
+                core::Rect{img.x() - half, img.y() - half, half * 2, half * 2},
+                eraserAngle_, ellipseShape_);
             if (removed > 0) {
                 rebuildComposed();
                 qInfo().noquote()
@@ -1175,7 +1464,8 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
         const QPoint img = imagePos(event->pos());
         const int half = currentWidth_ * 4;
         const std::size_t removed = annotations_.eraseIntersecting(
-            core::Rect{img.x() - half, img.y() - half, half * 2, half * 2});
+            core::Rect{img.x() - half, img.y() - half, half * 2, half * 2},
+            eraserAngle_, ellipseShape_);
         if (removed > 0) {
             rebuildComposed();
             qInfo().noquote() << QStringLiteral("[jie2] 橡皮擦删除 %1 条（剩 %2 条）")
@@ -1183,6 +1473,15 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
                                      .arg(annotations_.size());
         }
         update();
+        return;
+    }
+    // 移动 / 缩放手势（v2.3）：从手势快照实时推导，帧间无累积误差。
+    if (movingSelection_) {
+        updateMoveSelection(event->pos());
+        return;
+    }
+    if (resizingSelection_) {
+        updateResizeSelection(event->pos(), event->modifiers());
         return;
     }
     if (drawing_) {
@@ -1224,6 +1523,12 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
 
 void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
+        return;
+    }
+
+    // 移动 / 缩放手势收尾：一次性入历史 + 日志（手势期间的实时帧不进撤销栈）。
+    if (movingSelection_ || resizingSelection_) {
+        finishSelectionGesture();
         return;
     }
 
@@ -1304,10 +1609,53 @@ void SelectionOverlay::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void SelectionOverlay::wheelEvent(QWheelEvent* event) {
-    // 滚轮调节当前工具的粗细（与 Snipaste 的"滚轮调画笔宽度"一致）。
     if (hasSelection_) {
         const int delta = event->angleDelta().y();
         if (delta != 0) {
+            // 选中矩形/椭圆后 Shift+滚轮缩放（专业版对齐项 v2.11）。
+            // 围绕包围盒中心等比缩放；单步即一次可撤销编辑。
+            if (event->modifiers().testFlag(Qt::ShiftModifier) &&
+                selectedIndex_ >= 0 &&
+                static_cast<std::size_t>(selectedIndex_) <
+                    annotations_.size()) {
+                const std::size_t index =
+                    static_cast<std::size_t>(selectedIndex_);
+                const core::Annotation& item = annotations_.items()[index];
+                if (item.tool == core::AnnotationTool::Rect ||
+                    item.tool == core::AnnotationTool::Ellipse) {
+                    const double factor = delta > 0 ? 1.1 : 1.0 / 1.1;
+                    const core::Rect before = item.boundingRect();
+                    const double cx = before.x + before.width / 2.0;
+                    const double cy = before.y + before.height / 2.0;
+                    std::vector<core::Point> points = item.points;
+                    for (core::Point& point : points) {
+                        point.x = static_cast<int>(
+                            std::lround(cx + (point.x - cx) * factor));
+                        point.y = static_cast<int>(
+                            std::lround(cy + (point.y - cy) * factor));
+                    }
+                    annotations_.replacePoints(index, std::move(points),
+                                               /*record=*/true);
+                    rebuildComposed();
+                    const core::Rect now =
+                        annotations_.items()[index].boundingRect();
+                    const QString factorLabel =
+                        QString::number(factor, 'f', 2);
+                    qInfo().noquote()
+                        << QStringLiteral(
+                               "[jie2] 缩放选中标注 ×%1（%2x%3 → %4x%5）")
+                               .arg(factorLabel)
+                               .arg(before.width)
+                               .arg(before.height)
+                               .arg(now.width)
+                               .arg(now.height);
+                    showToast(QStringLiteral("缩放 ×%1").arg(factorLabel));
+                    update();
+                    event->accept();
+                    return;
+                }
+            }
+            // 滚轮调节当前工具的粗细（与 Snipaste 的"滚轮调画笔宽度"一致）。
             currentWidth_ = qBound(1, currentWidth_ + (delta > 0 ? 1 : -1), 24);
             showToast(QStringLiteral("粗细：%1").arg(currentWidth_));
             update();
@@ -1328,6 +1676,9 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         performRedo();
         return;
     }
+
+    // 应用内快捷键的修饰键位（ShortcutMap 精确匹配用）。
+    const unsigned scMods = shortcutModifiers(event->modifiers());
     // 自由选中（专业版 v2.8）：Delete 删除选中标注；方向键微移（Shift = 10px）。
     if (selectedIndex_ >= 0 &&
         static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
@@ -1382,42 +1733,71 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
             return;
         }
     }
-    // M = 放大镜标注（专业版 v2.6）。
-    if (event->key() == Qt::Key_M && !event->modifiers().testFlag(Qt::ControlModifier)) {
-        currentTool_ = core::AnnotationTool::Magnifier;
-        showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
+    // ---- 样式与粗细的方括号键 ----
+    // [ / ]：画笔粗细（v2.4 对齐项："除了鼠标滚轮和 1 2，也可以使用 [ ]"）；
+    // Shift+[ / Shift+]：橡皮擦区域旋转（v2.6 对齐项："矩形/椭圆区域橡皮擦可旋转"）。
+    //
+    // 注意：X11 下 Shift+] 送达的键值是花括号（} = BraceRight）而不是
+    // 方括号 —— 实测教训，早期只认 BracketRight 导致"旋转没反应"。
+    // 这里统一把花括号归一化为方括号再处理。
+    int bracketKey = event->key();
+    if (bracketKey == Qt::Key_BraceLeft) {
+        bracketKey = Qt::Key_BracketLeft;
+    } else if (bracketKey == Qt::Key_BraceRight) {
+        bracketKey = Qt::Key_BracketRight;
+    }
+    if (bracketKey == Qt::Key_BracketLeft ||
+        bracketKey == Qt::Key_BracketRight) {
+        const int delta = bracketKey == Qt::Key_BracketRight ? 1 : -1;
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            eraserAngle_ = (eraserAngle_ + delta * 15 + 360) % 360;
+            // toast 会同步写日志（"[jie2] 橡皮擦区域旋转：N°…"），测试据此断言。
+            showToast(QStringLiteral("橡皮擦区域旋转：%1°（Shift+[ ] 调整）")
+                          .arg(eraserAngle_));
+        } else {
+            currentWidth_ = qBound(1, currentWidth_ + delta, 24);
+            showToast(QStringLiteral("粗细：%1").arg(currentWidth_));
+        }
         update();
         return;
     }
-    // T = 文字、N = 序号、E = 橡皮擦（对齐 Snipaste 的字母键习惯）。
-    if (event->key() == Qt::Key_T && !event->modifiers().testFlag(Qt::ControlModifier)) {
+
+    // ---- 应用内快捷键（v2.11.3：可自定义；默认 T/N/E/M/D/R/O/B/Shift+B）----
+    //
+    // 走 ShortcutMap：用户可用配置 `shortcut.<动作>` 重绑或禁用（"none"），
+    // 修饰键要求精确匹配（按了 Ctrl+T 不会触发绑为 "t" 的动作）。
+    if (shortcuts_.matches("tool.text", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Text;
         showToast(QStringLiteral("工具：文字（点击位置输入）"));
         update();
         return;
     }
-    if (event->key() == Qt::Key_N && !event->modifiers().testFlag(Qt::ControlModifier)) {
+    if (shortcuts_.matches("tool.number", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Number;
         showToast(QStringLiteral("工具：序号（点击放置，自动编号）"));
         update();
         return;
     }
-    if (event->key() == Qt::Key_E && !event->modifiers().testFlag(Qt::ControlModifier)) {
+    if (shortcuts_.matches("tool.eraser", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Eraser;
         showToast(QStringLiteral("工具：橡皮擦（拖过即删除该标注）"));
         update();
         return;
     }
-    // D = 虚线样式开关（专业版对齐项：矩形/折线/箭头/画笔支持）。
-    if (event->key() == Qt::Key_D && !event->modifiers().testFlag(Qt::ControlModifier)) {
+    if (shortcuts_.matches("tool.magnifier", event->key(), scMods)) {
+        currentTool_ = core::AnnotationTool::Magnifier;
+        showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("style.dashed", event->key(), scMods)) {
         dashed_ = !dashed_;
         showToast(dashed_ ? QStringLiteral("线型：虚线")
                           : QStringLiteral("线型：实线"));
         update();
         return;
     }
-    // R = 圆角矩形半径循环（0 → 8 → 16 → 24）。
-    if (event->key() == Qt::Key_R && !event->modifiers().testFlag(Qt::ControlModifier)) {
+    if (shortcuts_.matches("style.corner", event->key(), scMods)) {
         cornerRadius_ = (cornerRadius_ + 8) % 32;
         showToast(cornerRadius_ > 0
                       ? QStringLiteral("圆角矩形：半径 %1").arg(cornerRadius_)
@@ -1425,26 +1805,25 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         update();
         return;
     }
-    // O = 椭圆形状开关（专业版 v2.6：马克笔/马赛克/模糊支持椭圆）。
-    if (event->key() == Qt::Key_O && !event->modifiers().testFlag(Qt::ControlModifier)) {
+    if (shortcuts_.matches("shape.ellipse", event->key(), scMods)) {
         ellipseShape_ = !ellipseShape_;
         showToast(ellipseShape_
-                      ? QStringLiteral("形状：椭圆（对马克笔/马赛克/模糊生效）")
+                      ? QStringLiteral("形状：椭圆（对马克笔/马赛克/模糊/橡皮擦生效）")
                       : QStringLiteral("形状：矩形"));
         update();
         return;
     }
-    // B = 双向箭头；Shift+B = 反向箭头（专业版 v2.5）。
-    if (event->key() == Qt::Key_B && !event->modifiers().testFlag(Qt::ControlModifier)) {
-        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
-            arrowReverse_ = !arrowReverse_;
-            showToast(arrowReverse_ ? QStringLiteral("箭头：反向（头在起点）")
-                                    : QStringLiteral("箭头：正向"));
-        } else {
-            arrowBothEnds_ = !arrowBothEnds_;
-            showToast(arrowBothEnds_ ? QStringLiteral("箭头：双向")
-                                     : QStringLiteral("箭头：单向"));
-        }
+    if (shortcuts_.matches("arrow.both", event->key(), scMods)) {
+        arrowBothEnds_ = !arrowBothEnds_;
+        showToast(arrowBothEnds_ ? QStringLiteral("箭头：双向")
+                                 : QStringLiteral("箭头：单向"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("arrow.reverse", event->key(), scMods)) {
+        arrowReverse_ = !arrowReverse_;
+        showToast(arrowReverse_ ? QStringLiteral("箭头：反向（头在起点）")
+                                : QStringLiteral("箭头：正向"));
         update();
         return;
     }

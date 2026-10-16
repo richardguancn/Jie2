@@ -9,9 +9,15 @@ APP=$WORK/src/ui/jie2
 pkill -f "Xvfb :99" 2>/dev/null
 pkill -f "build-linux/src/ui" 2>/dev/null
 sleep 0.5
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
 XVFB=$!
-sleep 1.5
+# 等 X socket 就绪（盲等固定时长在高负载下会竞态 —— 实测教训）。
+for i in $(seq 1 25); do
+    [ -S /tmp/.X11-unix/X99 ] && break
+    sleep 0.2
+done
+sleep 0.8
 
 rm -rf /root/.config/jie2 /root/Pictures/jie2
 "$APP" --select-rect 0,0,48,48 >/dev/null 2>&1   # 一条历史，卡片区就绪
