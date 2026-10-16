@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=截2
+Name[en]=Jie2
+Comment=截图 / 标注 / 贴图工具
+Comment[en]=Screenshot, annotate and pin tool
+Exec=jie2
+Icon=jie2
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=screenshot;capture;annotate;snip;截图;标注;
+StartupNotify=false
