@@ -31,6 +31,7 @@ struct SelectionOverlayOptions {
     std::vector<core::Rect> snapCandidates;  // 可吸附窗口（本屏逻辑坐标）
     int paletteSize = 6;        // 调色板可用颜色数量（v2.4 对齐项）
     core::ShortcutMap shortcuts = core::ShortcutMap::defaults();  // v2.11.3
+    bool selectImage = false;  // 衣架标注：居中显示并选中整张图片
     bool darkTheme = true;      // 主题（v2.6：跟随系统）
     bool eraserUndoable = true; // 橡皮擦删除可撤销（v2.6：可禁用二次编辑）
 };
@@ -55,7 +56,9 @@ class SelectionOverlay : public QDialog {
     Q_OBJECT
 
 public:
+    enum class Action { Finish, SaveFile, Copy, Pin };
     struct Outcome {
+        Action action = Action::Finish;
         bool accepted = false;
         QRect selection;      // 逻辑点，相对本屏左上角（交互/展示用途）
         QString sourcePath;   // 空 = 当前画面；非空 = 历史截图文件
@@ -101,8 +104,9 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    friend class UiAlignmentTest;
     /// 工具条按钮的语义。
-    enum class ToolbarButton { None, Save, Cancel, Tool, Undo, Redo, Color };
+    enum class ToolbarButton { None, Save, Copy, Pin, Cancel, Tool, Undo, Redo, Color };
 
     /// 工具条按钮描述。顺序即显示顺序。
     struct ToolbarItem {
@@ -122,6 +126,11 @@ private:
     /// 选区确定后显示的工具条：绘制与命中检测共用这里的几何，
     /// 避免"画出来的位置"和"可点的位置"不一致。
     void paintToolbar(QPainter& painter, const QRect& selection) const;
+    void advanceToolColor();
+    void showToolMenu(int index, const QPoint& globalPos);
+    std::array<QPoint, 8> cropHandles() const;
+    int cropHandleAt(const QPoint& pos) const;
+    void updateCropGesture(const QPoint& pos);
     QRect toolbarRect(const QRect& selection) const;
     QRect toolbarButtonRect(const QRect& selection, int index) const;
     ToolbarButton toolbarHitTest(const QPoint& pos, int* index) const;
@@ -197,6 +206,12 @@ private:
     QPoint cursor_;
     bool hasCursor_ = false;
     Outcome outcome_;
+    int toolbarHover_ = -1;
+    bool toolChosen_ = false;
+    int cropHandle_ = -1;
+    bool movingCrop_ = false;
+    QPoint cropPress_;
+    QRect cropStart_;
     QString toast_;  // 瞬时提示（按 C 复制色值 / 回放位置 / 刷新结果）
 
     // ---- 窗口吸附（M1）----

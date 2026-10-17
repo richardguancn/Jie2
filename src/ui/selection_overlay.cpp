@@ -13,10 +13,12 @@
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
 #include <QTimer>
+#include <QToolTip>
 #include <QWindow>
 #include <QWheelEvent>
 
@@ -26,7 +28,6 @@ namespace jie2::ui {
 
 namespace {
 
-constexpr int kHandleSize = 6;       // 选区把手边长（逻辑点）
 constexpr int kMinDragLogical = 3;   // 小于此距离不算一次有效选择
 constexpr int kSnapThresholdLogical = 8;  // 窗口吸附触发距离（逻辑点）
 constexpr int kMagnifierSize = 130;  // 放大镜边长（逻辑点）
@@ -35,10 +36,10 @@ constexpr int kMagnifierGap = 18;    // 放大镜与光标间距（逻辑点）
 constexpr int kChipHeight = 22;      // 色值条高度（逻辑点）
 
 // 工具条几何（逻辑点）。三个按钮等宽。
-constexpr int kToolbarHeight = 30;
-constexpr int kToolbarGap = 6;
+constexpr int kToolbarHeight = 24;
+constexpr int kToolbarGap = 0;
 
-const QColor kAccent(64, 158, 255);
+const QColor kAccent(40, 123, 255);
 const QColor kSnapColor(120, 230, 150);  // 吸附指示色（区别于普通选区边框）
 const QColor kDim(0, 0, 0, 110);
 // 提示条/工具条底色已改为按主题解析（SelectionOverlay::ChromeColors），
@@ -88,22 +89,6 @@ QRect rectBetween(const QPoint& a, const QPoint& b) {
 }
 
 /// 画一个圆角底 + 文本的小标签，返回其矩形。
-QRect drawTag(QPainter& painter, const QPoint& topLeft, const QString& text,
-              const QColor& background, const QColor& foreground, const QFont& font) {
-    painter.setFont(font);
-    const QFontMetrics metrics(font);
-    const int padX = 8;
-    const int padY = 4;
-    const QSize textSize = metrics.size(Qt::TextSingleLine, text);
-    const QRect rect(topLeft, QSize(textSize.width() + padX * 2,
-                                    textSize.height() + padY * 2));
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(background);
-    painter.drawRoundedRect(rect, 4, 4);
-    painter.setPen(foreground);
-    painter.drawText(rect, Qt::AlignCenter, text);
-    return rect;
-}
 
 } // namespace
 
@@ -159,6 +144,12 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
     // 当前抓屏画面铺满屏幕：逻辑点 → 像素的比例即 scaleFactor。
     frozenLogicalRect_ = QRect(0, 0, screenGeometry_.width(), screenGeometry_.height());
     frozenPixelScale_ = scaleFactor_;
+    if (options.selectImage) {
+        toolChosen_ = true;
+        setFrozenImage(frozenImage_, false);
+        selectionRect_ = frozenLogicalRect_;
+        hasSelection_ = true;
+    }
 }
 
 SelectionOverlay::Outcome SelectionOverlay::run(const QPixmap& frozen,
@@ -356,6 +347,7 @@ QRect SelectionOverlay::currentSelection() const {
 }
 
 void SelectionOverlay::commit(bool accepted) {
+    QToolTip::hideText();
     outcome_.accepted = accepted;
     outcome_.selection = accepted ? currentSelection() : QRect();
     if (accepted) {
@@ -933,9 +925,9 @@ void SelectionOverlay::paintEvent(QPaintEvent*) {
         }
     }
 
-    paintHint(painter);
+    if (!hasSelection_) paintHint(painter);
 
-    if (hasCursor_ || dragging_) {
+    if ((hasCursor_ || dragging_) && toolbarHover_ < 0) {
         paintMagnifier(painter);
     }
 
@@ -999,14 +991,16 @@ void SelectionOverlay::paintHint(QPainter& painter) const {
     const QString text = parts.join(QStringLiteral(" · "));
     painter.setFont(smallFont());
     const QFontMetrics metrics(smallFont());
-    const QSize textSize = metrics.size(Qt::TextSingleLine, text);
-    const QRect hintRect(QPoint((width() - textSize.width()) / 2, 16),
-                         QSize(textSize.width() + 20, textSize.height() + 10));
+    const int textWidth = qMax(1, width() - 44);
+    const QRect textBounds = metrics.boundingRect(QRect(0, 0, textWidth, 1000),
+                                                  Qt::TextWordWrap, text);
+    const QSize hintSize(textBounds.width() + 20, textBounds.height() + 10);
+    const QRect hintRect(QPoint((width() - hintSize.width()) / 2, 16), hintSize);
     painter.setPen(Qt::NoPen);
     painter.setBrush(chrome_.panelBg);
     painter.drawRoundedRect(hintRect, 5, 5);
     painter.setPen(chrome_.textFg);
-    painter.drawText(hintRect, Qt::AlignCenter, text);
+    painter.drawText(hintRect.adjusted(10, 5, -10, -5), Qt::AlignCenter | Qt::TextWordWrap, text);
 }
 
 void SelectionOverlay::paintSelectionChrome(QPainter& painter,
@@ -1036,110 +1030,113 @@ void SelectionOverlay::paintSelectionChrome(QPainter& painter,
     painter.setPen(QPen(kAccent, 1));
     painter.drawRect(selection.adjusted(0, 0, -1, -1));
 
-    // 四角把手
-    painter.setPen(Qt::NoPen);
+    // 八个圆形手柄：边中点与角点均可拖动。
+    painter.setPen(QPen(Qt::white, 1.2));
     painter.setBrush(kAccent);
-    const QPoint corners[4] = {
-        selection.topLeft(), selection.topRight(),
-        selection.bottomLeft(), selection.bottomRight()};
-    for (const QPoint& corner : corners) {
-        painter.drawRect(QRect(corner.x() - kHandleSize / 2,
-                               corner.y() - kHandleSize / 2,
-                               kHandleSize, kHandleSize));
+    for (const auto& point : cropHandles()) painter.drawEllipse(QPointF(point), 4.5, 4.5);
+
+    // 与参考图一致，默认只显示尺寸；macOS 使用逻辑点并标注 pt。
+#ifdef Q_OS_MACOS
+    const QString text = QStringLiteral("%1 × %2  pt").arg(selection.width()).arg(selection.height());
+#else
+    const QSize size = selectionToPixelRegion(selection).size();
+    const QString text = QStringLiteral("%1 × %2  px").arg(size.width()).arg(size.height());
+#endif
+    QFont font = smallFont();
+    font.setPointSize(12);
+    font.setWeight(QFont::Medium);
+    const QSize size = QFontMetrics(font).size(Qt::TextSingleLine, text) + QSize(14, 8);
+    const int x = qBound(6, selection.left(), qMax(6, width() - size.width() - 6));
+    const int y = selection.top() >= size.height() + 10 ?
+        selection.top() - size.height() - 6 : selection.top() + 10;
+    const QRect label(QPoint(x, y), size);
+    painter.setPen(QPen(QColor(120, 125, 140, 180), .8));
+    painter.setBrush(QColor(22, 24, 32, 240));
+    painter.drawRoundedRect(label, 6, 6);
+    painter.setPen(QColor(240, 240, 245));
+    painter.setFont(font);
+    painter.drawText(label, Qt::AlignCenter, text);
+}
+
+std::array<QPoint, 8> SelectionOverlay::cropHandles() const {
+    const QRect r = currentSelection();
+    return {r.topLeft(), QPoint(r.center().x(), r.top()), r.topRight(),
+            QPoint(r.right(), r.center().y()), r.bottomRight(),
+            QPoint(r.center().x(), r.bottom()), r.bottomLeft(), QPoint(r.left(), r.center().y())};
+}
+
+int SelectionOverlay::cropHandleAt(const QPoint& pos) const {
+    if (!hasSelection_) return -1;
+    const auto handles = cropHandles();
+    for (int i = 0; i < 8; ++i)
+        if ((handles[i] - pos).manhattanLength() <= 9) return i;
+    return -1;
+}
+
+void SelectionOverlay::updateCropGesture(const QPoint& pos) {
+    const QPoint delta = pos - cropPress_;
+    if (movingCrop_) {
+        QRect r = cropStart_.translated(delta);
+        r.moveLeft(qBound(0, r.left(), qMax(0, width() - r.width())));
+        r.moveTop(qBound(0, r.top(), qMax(0, height() - r.height())));
+        selectionRect_ = r;
+    } else {
+        int left = cropStart_.left(), right = cropStart_.right();
+        int top = cropStart_.top(), bottom = cropStart_.bottom();
+        if (cropHandle_ == 0 || cropHandle_ == 6 || cropHandle_ == 7) left += delta.x();
+        if (cropHandle_ == 2 || cropHandle_ == 3 || cropHandle_ == 4) right += delta.x();
+        if (cropHandle_ == 0 || cropHandle_ == 1 || cropHandle_ == 2) top += delta.y();
+        if (cropHandle_ == 4 || cropHandle_ == 5 || cropHandle_ == 6) bottom += delta.y();
+        selectionRect_ = QRect(QPoint(left, top), QPoint(right, bottom)).normalized().intersected(rect());
     }
-
-    // 尺寸标签（物理像素）+ 起点标签
-    const QSize physical(qRound(selection.width() * scaleFactor_),
-                         qRound(selection.height() * scaleFactor_));
-    const QPoint originPhysical(qRound(selection.x() * scaleFactor_),
-                                qRound(selection.y() * scaleFactor_));
-    const QString sizeText = QStringLiteral("%1 × %2")
-                                 .arg(physical.width())
-                                 .arg(physical.height());
-    const QString originText =
-        QStringLiteral("(%1, %2)").arg(originPhysical.x()).arg(originPhysical.y());
-
-    const QFont font = labelFont();
-    const QFontMetrics metrics(font);
-    const int sizeWidth = metrics.size(Qt::TextSingleLine, sizeText).width();
-    const int originWidth = metrics.size(Qt::TextSingleLine, originText).width();
-    const int totalWidth = sizeWidth + originWidth + 34;
-
-    // 优先放在选区上方；上方空间不足则放在选区内顶部，再不行放下方。
-    int y = selection.top() - 34;
-    if (y < 4) {
-        y = selection.top() + 8;
-    }
-    if (y + 30 > height()) {
-        y = selection.bottom() - 38;
-    }
-    const QPoint topLeft(selection.x(), y);
-
-    const QRect sizeRect = drawTag(painter, topLeft, sizeText, kAccent,
-                                   Qt::white, font);
-    drawTag(painter, QPoint(sizeRect.right() + 6, topLeft.y()), originText,
-            QColor(0, 0, 0, 180), QColor(230, 230, 230), font);
-    Q_UNUSED(totalWidth);
+    update();
 }
 
 const std::vector<SelectionOverlay::ToolbarItem>&
 SelectionOverlay::toolbarItems() {
-    // 顺序即显示顺序：9 个工具 → 撤销/重做 → 颜色 → 保存/取消。
+    // 图标按钮保持紧凑；标签用于悬停提示。
     static const std::vector<ToolbarItem> items = {
-        {ToolbarButton::Tool, core::AnnotationTool::Rect, "矩形", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Ellipse, "椭圆", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Arrow, "箭头", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Pencil, "铅笔", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Marker, "马克笔", 64},
-        {ToolbarButton::Tool, core::AnnotationTool::Mosaic, "马赛克", 64},
-        {ToolbarButton::Tool, core::AnnotationTool::Blur, "模糊", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Eraser, "橡皮", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Magnifier, "放大镜", 64},
-        {ToolbarButton::Tool, core::AnnotationTool::Text, "文字", 52},
-        {ToolbarButton::Tool, core::AnnotationTool::Number, "序号", 52},
-        {ToolbarButton::Undo, core::AnnotationTool::Rect, "撤销", 52},
-        {ToolbarButton::Redo, core::AnnotationTool::Rect, "重做", 52},
-        {ToolbarButton::Color, core::AnnotationTool::Rect, "", 40},
-        {ToolbarButton::Save, core::AnnotationTool::Rect, "保存", 76},
-        {ToolbarButton::Cancel, core::AnnotationTool::Rect, "取消", 60},
+        {ToolbarButton::Tool, core::AnnotationTool::Rect, "形状（右键选择矩形、椭圆）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Arrow, "箭头（右键调整样式和颜色）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Pencil, "画笔（右键选择粗细和颜色）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Marker, "荧光笔", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Mosaic, "马赛克（右键选择模糊、放大镜）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Text, "文字（右键选择序号）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Eraser, "橡皮擦", 32},
+        {ToolbarButton::Undo, core::AnnotationTool::Rect, "撤销", 32},
+        {ToolbarButton::Redo, core::AnnotationTool::Rect, "重做", 32},
+        {ToolbarButton::Cancel, core::AnnotationTool::Rect, "取消截图", 32},
+        {ToolbarButton::Pin, core::AnnotationTool::Rect, "贴到屏幕", 32},
+        {ToolbarButton::Save, core::AnnotationTool::Rect, "保存到文件", 32},
+        {ToolbarButton::Copy, core::AnnotationTool::Rect, "复制图像", 32},
     };
     return items;
 }
 
 QRect SelectionOverlay::toolbarRect(const QRect& selection) const {
-    const auto& items = toolbarItems();
-    int totalWidth = 0;
-    for (const auto& item : items) {
-        totalWidth += item.width;
+    const int count = static_cast<int>(toolbarItems().size());
+    const int columns = qMax(1, qMin(count, (width() - 32) / 32));
+    const int rows = (count + columns - 1) / columns;
+    const int totalWidth = columns * 32 + (columns == count ? 12 : 0);
+    const int totalHeight = rows * (kToolbarHeight + kToolbarGap) - kToolbarGap;
+    int x = qBound(10, selection.right() - totalWidth + 1,
+                   qMax(10, width() - totalWidth - 10));
+    int y = selection.bottom() + 12;
+    if (y + totalHeight > height() - 10) {
+        y = selection.top() - totalHeight - 44;
     }
-    totalWidth += static_cast<int>(items.size() - 1) * kToolbarGap;
-    const int totalHeight = kToolbarHeight;
-    int x = selection.left();
-    int y = selection.bottom() + 10;
-    if (y + totalHeight > height() - 6) {
-        y = selection.bottom() - totalHeight - 10;  // 下方放不下 → 移到选区内底边
-    }
-    if (y < 6) {
-        y = selection.top() + 10;  // 选区太靠上 → 放到选区内部顶边
-    }
-    if (y + totalHeight > height() - 6) {
-        y = height() - totalHeight - 6;
-    }
-    x = qBound(6, x, qMax(6, width() - totalWidth - 6));
+    y = qBound(10, y, qMax(10, height() - totalHeight - 10));
     return QRect(x, y, totalWidth, totalHeight);
 }
 
 QRect SelectionOverlay::toolbarButtonRect(const QRect& selection, int index) const {
-    const auto& items = toolbarItems();
     const QRect bar = toolbarRect(selection);
-    int x = bar.left();
-    for (int i = 0; i < index && i < static_cast<int>(items.size()); ++i) {
-        x += items[static_cast<std::size_t>(i)].width + kToolbarGap;
-    }
-    const int width = index < static_cast<int>(items.size())
-                          ? items[static_cast<std::size_t>(index)].width
-                          : 0;
-    return QRect(x, bar.top(), width, bar.height());
+    const int count = static_cast<int>(toolbarItems().size());
+    const int columns = qMin(count, qMax(1, (width() - 32) / 32));
+    const int gap = columns == count ? (index >= 7 ? 6 : 0) + (index >= 9 ? 6 : 0) : 0;
+    return QRect(bar.left() + (index % columns) * 32 + gap,
+                 bar.top() + (index / columns) * (kToolbarHeight + kToolbarGap),
+                 32, kToolbarHeight);
 }
 
 SelectionOverlay::ToolbarButton SelectionOverlay::toolbarHitTest(
@@ -1172,8 +1169,15 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
 
     // 底板（比按钮群外扩 4pt，形成留白）。主题色（v2.6）。
     painter.setPen(Qt::NoPen);
-    painter.setBrush(chrome_.panelBg);
-    painter.drawRoundedRect(bar.adjusted(-4, -4, 4, 4), 8, 8);
+    painter.setBrush(QColor(39, 40, 43, 250));
+    painter.drawRoundedRect(bar.adjusted(-4, -4, 4, 4), 6, 6);
+    if (bar.width() >= 428) {
+        painter.setPen(QPen(QColor(190, 190, 194, 150), .8));
+        for (int index : {7, 9}) {
+            const int x = toolbarButtonRect(selection, index).left() - 3;
+            painter.drawLine(x, bar.top() + 7, x, bar.bottom() - 7);
+        }
+    }
 
     painter.setFont(labelFont());
     const auto& items = toolbarItems();
@@ -1181,61 +1185,140 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
         const ToolbarItem& item = items[static_cast<std::size_t>(i)];
         const QRect rect = toolbarButtonRect(selection, i);
 
-        // 背景：当前工具高亮；保存按钮用主色；其余用主题按钮色。
-        QColor background = chrome_.buttonBg;
-        QColor foreground = chrome_.buttonFg;
-        bool enabled = true;
-        switch (item.action) {
-            case ToolbarButton::Tool:
-                background = (currentTool_ == item.tool) ? kAccent
-                                                         : chrome_.buttonBg;
-                if (currentTool_ == item.tool) {
-                    foreground = Qt::white;
-                }
-                break;
-            case ToolbarButton::Undo:
-                enabled = annotations_.canUndo();
-                break;
-            case ToolbarButton::Redo:
-                enabled = annotations_.canRedo();
-                break;
-            case ToolbarButton::Save:
-                background = kAccent;
-                foreground = Qt::white;
-                break;
-            case ToolbarButton::Color:
-                break;
-            case ToolbarButton::Cancel:
-            case ToolbarButton::None:
-                break;
+        QColor foreground(238, 238, 240);
+        const bool enabled = item.action == ToolbarButton::Undo ? annotations_.canUndo() :
+                             item.action == ToolbarButton::Redo ? annotations_.canRedo() : true;
+        if (!enabled) foreground = QColor(130, 131, 135);
+        const bool selected = toolChosen_ && item.action == ToolbarButton::Tool &&
+            (currentTool_ == item.tool || (i == 0 && currentTool_ == core::AnnotationTool::Ellipse) ||
+             (i == 4 && (currentTool_ == core::AnnotationTool::Blur || currentTool_ == core::AnnotationTool::Magnifier)) ||
+             (i == 5 && currentTool_ == core::AnnotationTool::Number));
+        if (enabled && (selected || (hasCursor_ && rect.contains(cursor_)))) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(selected ? QColor(255, 255, 255, 28) : QColor(255, 255, 255, 18));
+            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 4, 4);
         }
-        if (!enabled) {
-            background = chrome_.disabledBg;
-            foreground = chrome_.disabledFg;
-        }
-
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(background);
-        painter.drawRoundedRect(rect, 5, 5);
-
-        if (item.action == ToolbarButton::Color) {
-            // 颜色按钮：画当前颜色的色块（未选工具时置灰）。
-            const core::Rgba rgba = currentColor();
-            QColor swatch(rgba.r, rgba.g, rgba.b);
-            if (currentTool_ == core::AnnotationTool::Marker) {
-                swatch.setAlpha(150);
+        // 统一线条图标，不依赖字体中的特殊字符。
+        painter.save();
+        painter.translate(rect.center() - QPoint(10, 10));
+        painter.setPen(QPen(foreground, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::NoBrush);
+        if (item.action == ToolbarButton::Cancel) {
+            painter.drawLine(5, 5, 15, 15); painter.drawLine(15, 5, 5, 15);
+        } else if (item.action == ToolbarButton::Save) {
+            painter.drawRect(QRectF(3, 2, 14, 16));
+            painter.drawRect(QRectF(6, 2, 7, 5));
+            painter.drawRect(QRectF(6, 12, 8, 6));
+        } else if (item.action == ToolbarButton::Copy) {
+            painter.drawRoundedRect(QRectF(5, 5, 11, 13), 1.5, 1.5);
+            painter.drawPolyline(QPolygonF{QPointF(13, 2), QPointF(2, 2), QPointF(2, 14)});
+        } else if (item.action == ToolbarButton::Pin) {
+            painter.save(); painter.translate(10, 10); painter.rotate(42);
+            painter.setBrush(foreground);
+            painter.drawPolygon(QPolygonF{QPointF(-4,-8),QPointF(4,-8),QPointF(3,-5),QPointF(3,1),QPointF(6,4),QPointF(-6,4),QPointF(-3,1),QPointF(-3,-5)});
+            painter.drawLine(0, 4, 0, 12); painter.restore();
+        } else if (item.action == ToolbarButton::Undo || item.action == ToolbarButton::Redo) {
+            if (item.action == ToolbarButton::Redo) { painter.translate(20, 0); painter.scale(-1, 1); }
+            QPainterPath arrow;
+            arrow.moveTo(8, 2); arrow.lineTo(1, 8); arrow.lineTo(8, 14); arrow.lineTo(8, 10);
+            arrow.cubicTo(14, 9, 17, 13, 16, 18);
+            arrow.cubicTo(21, 10, 16, 5, 8, 6); arrow.closeSubpath();
+            painter.setPen(Qt::NoPen); painter.setBrush(foreground); painter.drawPath(arrow);
+        } else {
+            switch (item.tool) {
+                case core::AnnotationTool::Rect:
+                    painter.drawRoundedRect(QRectF(2, 3, 12, 11), 1, 1);
+                    painter.setBrush(QColor(39, 40, 43));
+                    painter.drawEllipse(QRectF(8, 9, 10, 7)); break;
+                case core::AnnotationTool::Ellipse: painter.drawEllipse(QRectF(3, 4, 14, 12)); break;
+                case core::AnnotationTool::Arrow:
+                    painter.drawPolyline(QPolygonF{QPointF(2, 15), QPointF(7, 9), QPointF(12, 12), QPointF(17, 4)});
+                    painter.setBrush(foreground); painter.drawPolygon(QPolygonF{QPointF(13, 5), QPointF(19, 2), QPointF(17, 8)}); break;
+                case core::AnnotationTool::Text:
+                    painter.drawLine(4, 4, 16, 4); painter.drawLine(10, 4, 10, 17); painter.drawLine(7, 17, 13, 17); break;
+                case core::AnnotationTool::Number:
+                    painter.drawEllipse(QRectF(2, 2, 16, 16)); painter.drawText(QRect(2, 1, 16, 18), Qt::AlignCenter, "1"); break;
+                case core::AnnotationTool::Magnifier:
+                    painter.drawEllipse(QRectF(2, 2, 11, 11)); painter.drawLine(12, 12, 18, 18); painter.drawLine(5, 7, 10, 7); painter.drawLine(7, 5, 7, 10); break;
+                case core::AnnotationTool::Mosaic:
+                    painter.setBrush(foreground); painter.setPen(Qt::NoPen);
+                    painter.drawRoundedRect(QRectF(3, 3, 14, 14), 1.5, 1.5);
+                    painter.setBrush(QColor(39, 40, 43));
+                    painter.drawRect(QRectF(10, 3, 7, 7)); painter.drawRect(QRectF(3, 10, 7, 7));
+                    break;
+                case core::AnnotationTool::Blur:
+                    for (int row=0; row<3; ++row) { QPen pen(foreground, 3-row*.7); painter.setPen(pen); painter.drawLine(4, 5+row*5, 16, 5+row*5); } break;
+                case core::AnnotationTool::Eraser:
+                    painter.setBrush(foreground);
+                    painter.drawPolygon(QPolygonF{QPointF(3, 12), QPointF(11, 3), QPointF(18, 9), QPointF(11, 17), QPointF(8, 17)}); painter.drawLine(7, 8, 14, 14); break;
+                case core::AnnotationTool::Marker:
+                    painter.setPen(QPen(foreground, 5, Qt::SolidLine, Qt::FlatCap)); painter.drawLine(6, 13, 15, 4);
+                    painter.setPen(QPen(foreground, 1.6)); painter.drawLine(3, 18, 17, 18); break;
+                case core::AnnotationTool::Pencil:
+                    painter.drawPolygon(QPolygonF{QPointF(3, 17), QPointF(5, 11), QPointF(14, 2), QPointF(18, 6), QPointF(9, 15)}); break;
             }
-            painter.setBrush(swatch);
-            // 描边跟随主题的前景色（浅色主题下白描边会看不见）。
-            painter.setPen(QPen(chrome_.buttonFg, 1));
-            painter.drawRoundedRect(rect.adjusted(9, 7, -9, -7), 3, 3);
-            continue;
         }
-
-        painter.setPen(foreground);
-        painter.drawText(rect, Qt::AlignCenter,
-                         QString::fromUtf8(item.label));
+        painter.restore();
     }
+}
+
+void SelectionOverlay::advanceToolColor() {
+    // 只推进**当前工具**的颜色索引（专业版 v2.4：形状分别记忆颜色）。
+    int& index = colorIndexByTool_[static_cast<int>(currentTool_) % 16];
+    index += 1;
+    const core::Rgba rgba = currentColor();
+    const QString hex = QStringLiteral("#%1%2%3")
+                            .arg(rgba.r, 2, 16, QLatin1Char('0'))
+                            .arg(rgba.g, 2, 16, QLatin1Char('0'))
+                            .arg(rgba.b, 2, 16, QLatin1Char('0'))
+                            .toUpper();
+    // 也写日志：调色板大小可配置、颜色按工具记忆 —— 日志是自动化验证与排障的依据。
+    qInfo().noquote() << QStringLiteral("[jie2] 颜色：%1（工具=%2，调色板 %3 色，该工具第 %4 次切换）")
+                             .arg(hex)
+                             .arg(QString::fromUtf8(toolDisplayName(currentTool_)))
+                             .arg(std::clamp(paletteSize_, 2, 10))
+                             .arg(index);
+    showToast(QStringLiteral("颜色 %1").arg(hex));
+    update();
+
+}
+
+void SelectionOverlay::showToolMenu(int index, const QPoint& globalPos) {
+    QMenu menu(this);
+    std::vector<core::AnnotationTool> choices;
+    using Tool = core::AnnotationTool;
+    if (index == 0) choices = {Tool::Rect, Tool::Ellipse};
+    else if (index == 4) choices = {Tool::Mosaic, Tool::Blur, Tool::Magnifier};
+    else if (index == 5) choices = {Tool::Text, Tool::Number};
+    else choices = {toolbarItems()[index].tool};
+    if (std::find(choices.begin(), choices.end(), currentTool_) == choices.end()) currentTool_ = choices.front();
+    toolChosen_ = true;
+    for (const auto tool : choices) {
+        auto* action = menu.addAction(QString::fromUtf8(toolDisplayName(tool)));
+        action->setCheckable(true); action->setChecked(toolChosen_ && currentTool_ == tool);
+        connect(action, &QAction::triggered, this, [this, tool] { currentTool_ = tool; toolChosen_ = true; update(); });
+    }
+    menu.addSeparator();
+    for (int color = 0; color < std::clamp(paletteSize_, 2, 10); ++color) {
+        auto* action = menu.addAction(QStringLiteral("颜色 %1").arg(color + 1));
+        const int previous = colorIndexByTool_[static_cast<int>(currentTool_) % 16];
+        colorIndexByTool_[static_cast<int>(currentTool_) % 16] = color;
+        const auto rgba = currentColor();
+        colorIndexByTool_[static_cast<int>(currentTool_) % 16] = previous;
+        QPixmap swatch(16, 16); swatch.fill(QColor(rgba.r, rgba.g, rgba.b));
+        action->setIcon(QIcon(swatch));
+        connect(action, &QAction::triggered, this, [this, color, index] {
+            if (!toolChosen_) currentTool_ = toolbarItems()[index].tool;
+            colorIndexByTool_[static_cast<int>(currentTool_) % 16] = color;
+            toolChosen_ = true; update();
+        });
+    }
+    auto* widthMenu = menu.addMenu(QStringLiteral("粗细"));
+    for (int width : {1, 2, 3, 5, 8, 12}) {
+        auto* action = widthMenu->addAction(QString::number(width));
+        connect(action, &QAction::triggered, this, [this, width] { currentWidth_ = width; update(); });
+    }
+    menu.exec(globalPos);
 }
 
 void SelectionOverlay::paintMagnifier(QPainter& painter) {
@@ -1309,6 +1392,13 @@ void SelectionOverlay::paintMagnifier(QPainter& painter) {
 
 void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::RightButton) {
+        int index = -1;
+        if (toolbarHitTest(event->pos(), &index) == ToolbarButton::Tool) {
+            showToolMenu(index, event->globalPosition().toPoint());
+            return;
+        }
+    }
+    if (event->button() == Qt::RightButton) {
         // 绘制中：右键结束当前标注（丢弃草稿）；否则取消整个截图。
         if (drawing_) {
             drawing_ = false;
@@ -1331,6 +1421,15 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
     const auto& items = toolbarItems();
     switch (hit) {
         case ToolbarButton::Save:
+            outcome_.action = Action::SaveFile;
+            commit(true);
+            return;
+        case ToolbarButton::Copy:
+            outcome_.action = Action::Copy;
+            commit(true);
+            return;
+        case ToolbarButton::Pin:
+            outcome_.action = Action::Pin;
             commit(true);
             return;
         case ToolbarButton::Cancel:
@@ -1339,6 +1438,7 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
         case ToolbarButton::Tool:
             if (index >= 0 && index < static_cast<int>(items.size())) {
                 currentTool_ = items[static_cast<std::size_t>(index)].tool;
+                toolChosen_ = true;
                 qInfo().noquote() << QStringLiteral("[jie2] 切换工具：%1")
                                          .arg(QString::fromUtf8(
                                              toolDisplayName(currentTool_)));
@@ -1355,29 +1455,21 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
             performRedo();
             return;
         case ToolbarButton::Color: {
-            // 只推进**当前工具**的颜色索引（专业版 v2.4：形状分别记忆颜色）。
-            int& index = colorIndexByTool_[static_cast<int>(currentTool_) % 16];
-            index += 1;
-            const core::Rgba rgba = currentColor();
-            const QString hex = QStringLiteral("#%1%2%3")
-                                    .arg(rgba.r, 2, 16, QLatin1Char('0'))
-                                    .arg(rgba.g, 2, 16, QLatin1Char('0'))
-                                    .arg(rgba.b, 2, 16, QLatin1Char('0'))
-                                    .toUpper();
-            // 也写日志：调色板大小可配置、颜色按工具记忆 —— 日志是自动化验证与排障的依据。
-            qInfo().noquote() << QStringLiteral("[jie2] 颜色：%1（工具=%2，调色板 %3 色，该工具第 %4 次切换）")
-                                     .arg(hex)
-                                     .arg(QString::fromUtf8(toolDisplayName(currentTool_)))
-                                     .arg(std::clamp(paletteSize_, 2, 10))
-                                     .arg(index);
-            showToast(QStringLiteral("颜色 %1").arg(hex));
-            update();
+            advanceToolColor();
             return;
         }
+
         case ToolbarButton::None:
             break;
     }
 
+    cropHandle_ = cropHandleAt(event->pos());
+    if (cropHandle_ >= 0 || (hasSelection_ && !toolChosen_ && selectionRect_.contains(event->pos()))) {
+        cropStart_ = selectionRect_;
+        cropPress_ = event->pos();
+        movingCrop_ = cropHandle_ < 0;
+        return;
+    }
     // 已有选区且点击落在选区内 → 开始绘制/放置标注（而不是重开选区）。
     // 这是与 Snipaste 一致的心智模型：选完区域后直接在区域内画。
     if (hasSelection_ && !selectionRect_.isEmpty() &&
@@ -1497,7 +1589,20 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
 }
 
 void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
+    if (cropHandle_ >= 0 || movingCrop_) { updateCropGesture(event->pos()); return; }
     cursor_ = event->pos();
+    int hover = -1;
+    toolbarHitTest(cursor_, &hover);
+    if (hover != toolbarHover_) {
+        toolbarHover_ = hover;
+        setCursor(hover >= 0 ? Qt::PointingHandCursor : Qt::CrossCursor);
+        QToolTip::hideText();
+        if (hover >= 0) {
+            QToolTip::showText(event->globalPosition().toPoint(),
+                              QString::fromUtf8(toolbarItems()[hover].label), this);
+        }
+    }
+
     hasCursor_ = true;
     if (erasing_) {
         const QPoint img = imagePos(event->pos());
@@ -1565,6 +1670,11 @@ void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
 
+    if (cropHandle_ >= 0 || movingCrop_) {
+        updateCropGesture(event->pos());
+        cropHandle_ = -1; movingCrop_ = false;
+        return;
+    }
     // 移动 / 缩放手势收尾：一次性入历史 + 日志（手势期间的实时帧不进撤销栈）。
     if (movingSelection_ || resizingSelection_) {
         finishSelectionGesture();
@@ -1642,7 +1752,9 @@ void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
 
 void SelectionOverlay::mouseDoubleClickEvent(QMouseEvent* event) {
     // 双击确认保存。绘制中不响应（避免误提交）。
-    if (event->button() == Qt::LeftButton && hasSelection_ && !drawing_) {
+    if (event->button() == Qt::LeftButton && hasSelection_ && !drawing_ &&
+        currentSelection().contains(event->pos()) &&
+        toolbarHitTest(event->pos(), nullptr) == ToolbarButton::None) {
         commit(true);
     }
 }
@@ -1770,18 +1882,19 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         update();
         return;
     }
-    // 数字键 1-9 快速切换工具。
+    if (event->key() == Qt::Key_C && event->modifiers().testFlag(Qt::ShiftModifier) && hasSelection_) {
+        advanceToolColor();
+        return;
+    }
+    // 数字快捷键保持原映射，不随工具条分组改变。
     if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
-        const int index = event->key() - Qt::Key_1;
-        const auto& items = toolbarItems();
-        if (index >= 0 && index < static_cast<int>(items.size()) &&
-            items[static_cast<std::size_t>(index)].action == ToolbarButton::Tool) {
-            currentTool_ = items[static_cast<std::size_t>(index)].tool;
-            showToast(QStringLiteral("工具：%1")
-                          .arg(QString::fromUtf8(toolDisplayName(currentTool_))));
-            update();
-            return;
-        }
+        using Tool = core::AnnotationTool;
+        static constexpr Tool tools[] = {Tool::Rect, Tool::Ellipse, Tool::Arrow,
+            Tool::Pencil, Tool::Marker, Tool::Mosaic, Tool::Blur, Tool::Eraser, Tool::Magnifier};
+        currentTool_ = tools[event->key() - Qt::Key_1];
+        toolChosen_ = true;
+        update();
+        return;
     }
     // ---- 样式与粗细的方括号键 ----
     // [ / ]：画笔粗细（v2.4 对齐项："除了鼠标滚轮和 1 2，也可以使用 [ ]"）；
@@ -1818,24 +1931,28 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
     // 修饰键要求精确匹配（按了 Ctrl+T 不会触发绑为 "t" 的动作）。
     if (shortcuts_.matches("tool.text", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Text;
+        toolChosen_ = true;
         showToast(QStringLiteral("工具：文字（点击位置输入）"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.number", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Number;
+        toolChosen_ = true;
         showToast(QStringLiteral("工具：序号（点击放置，自动编号）"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.eraser", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Eraser;
+        toolChosen_ = true;
         showToast(QStringLiteral("工具：橡皮擦（拖过即删除该标注）"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.magnifier", event->key(), scMods)) {
         currentTool_ = core::AnnotationTool::Magnifier;
+        toolChosen_ = true;
         showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
         update();
         return;
