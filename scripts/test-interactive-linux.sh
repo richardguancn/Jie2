@@ -35,28 +35,8 @@ rm -f "$LOG"
 APP_PID=$!
 sleep 2
 
-# 工具条按钮中心坐标（与 selection_overlay.cpp 的 toolbarItems() 布局一致）。
-# 选区 (100,100)-(500,400) → 工具条顶边 y=410，按钮高 30 → 中心 y=425。
-read -r RECT_X RECT_Y ARROW_X ERASER_X TEXT_X NUMBER_X UNDO_X REDO_X COLOR_X SAVE_X <<EOF
-$(python3 - <<'PY'
-# 顺序必须与 selection_overlay.cpp 的 toolbarItems() 完全一致。
-# 布局变化（如新增"放大镜"）后必须同步这里，否则"点击"会落到错误的按钮上 ——
-# 这是实测教训：加放大镜后旧的坐标表让"换颜色"点到"文字"工具，
-# 结果箭头颜色断言失败，排查了半天。
-widths = [52,52,52,52,64,64,52,52,64,52,52,52,52,52,40,76,60]
-names  = ["rect","ellipse","arrow","pencil","marker","mosaic","blur","eraser",
-          "magnifier","text","number","undo","redo","color","save","cancel"]
-x = 100
-pos = {}
-for w, n in zip(widths, names):
-    pos[n] = x + w // 2
-    x += w + 6
-print(pos["rect"], 425, pos["arrow"], pos["eraser"], pos["text"], pos["number"],
-      pos["undo"], pos["redo"], pos["color"], pos["save"])
-PY
-)
-EOF
-echo "按钮坐标: rect=($RECT_X,$RECT_Y) arrow=$ARROW_X eraser=$ERASER_X text=$TEXT_X number=$NUMBER_X undo=$UNDO_X redo=$REDO_X color=$COLOR_X save=$SAVE_X"
+# 工具和颜色通过快捷键切换；工具条按钮的实际点击由界面测试覆盖。
+
 
 click() { xdotool mousemove --sync "$1" "$2" sleep 0.15 click 1 sleep 0.4; }
 drag() { # x1 y1 x2 y2
@@ -73,31 +53,32 @@ drag() { # x1 y1 x2 y2
 
 echo "== 1. 拖拽选择区域 (100,100)-(500,400) =="
 drag 100 100 500 400
+xdotool key 1
 
 echo "== 2. 绘制矩形 (200,150)-(350,300) =="
 drag 200 150 350 300
 
 echo "== 3. 撤销 =="
-click "$UNDO_X" "$RECT_Y"
+xdotool key ctrl+z
 
 echo "== 4. 重做 =="
-click "$REDO_X" "$RECT_Y"
+xdotool key ctrl+shift+z
 
 echo "== 5. 切换到箭头工具（先切，再换色）=="
-click "$ARROW_X" "$RECT_Y"
+xdotool key 3
 
 echo "== 5.5 换颜色（箭头工具：红→黄）=="
 # 注意：颜色按形状独立记忆（专业版 v2.4）——必须**在箭头工具下**点颜色，
 # 否则改的是别的工具的颜色，箭头仍是红色（本测试曾因此断言失败）。
-click "$COLOR_X" "$RECT_Y"
+xdotool key shift+c
 
 echo "== 6. 绘制箭头 (360,250)-(450,360) =="
 drag 360 250 450 360
 
 echo "== 6.5 文字工具：切工具 → 换色（文字自己的红→黄）→ 输入 TEST =="
-click "$TEXT_X" "$RECT_Y"
+xdotool key t
 # 颜色按形状独立记忆（v2.4）：文字工具要黄色，需在**文字工具下**点颜色。
-click "$COLOR_X" "$RECT_Y"
+xdotool key shift+c
 xdotool mousemove --sync 150 340 sleep 0.2 click 1
 sleep 0.5
 xdotool type --delay 60 "TEST"
@@ -106,9 +87,9 @@ xdotool key Return
 sleep 0.5
 
 echo "== 6.6 序号工具：切工具 → 换色（序号自己的红→黄）→ 点击两次放置 1、2 =="
-click "$NUMBER_X" "$RECT_Y"
+xdotool key n
 # 颜色按形状独立记忆（v2.4）：序号工具要黄色，需在**序号工具下**点颜色。
-click "$COLOR_X" "$RECT_Y"
+xdotool key shift+c
 xdotool mousemove --sync 430 150 sleep 0.2 click 1
 sleep 0.4
 xdotool mousemove --sync 470 190 sleep 0.2 click 1
@@ -117,13 +98,13 @@ sleep 0.4
 echo "== 6.7 橡皮擦：在左上空白处画一个小矩形再擦掉 =="
 # 位置选择说明：必须远离其他标注的包围盒 —— 橡皮擦按"包围盒相交即整条删除"
 # 工作，若小矩形贴着箭头（(360,250)-(450,360)）会连箭头一起擦掉。
-click "$RECT_X" "$RECT_Y"
+xdotool key 1
 drag 130 130 160 160
-click "$ERASER_X" "$RECT_Y"
+xdotool key e
 drag 135 135 155 155
 
-echo "== 7. 点击保存 =="
-click "$SAVE_X" "$RECT_Y"
+echo "== 7. 确认保存 =="
+xdotool key Return
 
 sleep 1.0
 kill $APP_PID 2>/dev/null

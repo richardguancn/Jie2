@@ -35,23 +35,9 @@ APP_PID=$!
 sleep 2.5
 
 # 工具条按钮坐标（与 selection_overlay.cpp 的 toolbarItems() 一致）
-read -r RECT_X ELLIPSE_X COLOR_X <<EOF
-$(python3 - <<'PY'
-widths = [52,52,52,52,64,64,52,52,64,52,52,52,52,40,76,60]
-names  = ["rect","ellipse","arrow","pencil","marker","mosaic","blur","eraser",
-          "magnifier","text","number","undo","redo","color","save","cancel"]
-x = 100
-pos = {}
-for w, n in zip(widths, names):
-    pos[n] = x + w // 2
-    x += w + 6
-print(pos["rect"], pos["ellipse"], pos["color"])
-PY
-)
-EOF
+# 工具和颜色通过快捷键切换；工具条按钮的实际点击由界面测试覆盖。
 
-# 选区 (100,100)-(430,340)；工具条顶边 = 340+10 = 350，按钮中心 y = 365
-BAR_Y=365
+
 
 echo "== 选区 =="
 xdotool mousemove --sync 100 100 sleep 0.15 mousedown 1 sleep 0.15
@@ -63,17 +49,17 @@ xdotool mouseup 1 sleep 0.5
 click() { xdotool mousemove --sync "$1" "$2" sleep 0.2 click 1; sleep 0.4; }
 
 echo "== 1. 矩形工具：点颜色 2 次 =="
-click "$RECT_X" "$BAR_Y"          # 选矩形（确保是矩形）
-click "$COLOR_X" "$BAR_Y"
-click "$COLOR_X" "$BAR_Y"
+xdotool key 1          # 选矩形（确保是矩形）
+xdotool key shift+c
+xdotool key shift+c
 
 echo "== 2. 切椭圆：点颜色 1 次 =="
-click "$ELLIPSE_X" "$BAR_Y"
-click "$COLOR_X" "$BAR_Y"
+xdotool key 2
+xdotool key shift+c
 
 echo "== 3. 切回矩形：点颜色 1 次 =="
-click "$RECT_X" "$BAR_Y"
-click "$COLOR_X" "$BAR_Y"
+xdotool key 1
+xdotool key shift+c
 
 # Esc 取消
 xdotool key Escape

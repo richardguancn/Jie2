@@ -42,21 +42,8 @@ if ! kill -0 "$APP_PID" 2>/dev/null; then
 fi
 
 # 工具条按钮坐标（与 selection_overlay.cpp 的 toolbarItems() 一致）
-read -r RECT_X COLOR_X SAVE_X <<EOF
-$(python3 - <<'PY'
-widths = [52,52,52,52,64,64,52,52,64,52,52,52,52,40,76,60]
-names  = ["rect","ellipse","arrow","pencil","marker","mosaic","blur","eraser",
-          "magnifier","text","number","undo","redo","color","save","cancel"]
-x = 100
-pos = {}
-for w, n in zip(widths, names):
-    pos[n] = x + w // 2
-    x += w + 6
-print(pos["rect"], pos["color"], pos["save"])
-PY
-)
-EOF
-BAR_Y=425   # 选区底边 400 + 10 + 按钮半高 15（与 test-interactive-linux.sh 一致）
+# 工具和颜色通过快捷键切换；工具条按钮的实际点击由界面测试覆盖。
+
 
 click() { xdotool mousemove --sync "$1" "$2" sleep 0.2 click 1; sleep 0.35; }
 
@@ -73,9 +60,10 @@ drag() {
 
 echo "== 1. 选区 (100,100)-(500,400) =="
 drag 100 100 500 400
+xdotool key 1
 
 echo "== 2. 画矩形 (200,150)-(350,300) =="
-click "$RECT_X" "$BAR_Y"
+xdotool key 1
 drag 200 150 350 300
 
 echo "== 3. Ctrl+点击矩形中心 (275,225) → 选中 =="
@@ -89,7 +77,7 @@ xdotool key Delete
 sleep 0.5
 
 echo "== 4.5 保存（第一次输出：应无矩形）=="
-click "$SAVE_X" "$BAR_Y"
+xdotool key Return
 sleep 1.5
 
 echo "== 5. 再开一次遮罩：画矩形 → 选中 → Right×20 =="
@@ -97,7 +85,8 @@ echo "== 5. 再开一次遮罩：画矩形 → 选中 → Right×20 =="
 APP2_PID=$!
 sleep 2.5
 drag 100 100 500 400
-click "$RECT_X" "$BAR_Y"
+xdotool key 1
+xdotool key 1
 drag 200 150 350 300
 xdotool keydown ctrl
 xdotool mousemove --sync 275 225 sleep 0.2 click 1
@@ -107,7 +96,7 @@ for i in $(seq 1 20); do xdotool key Right; sleep 0.06; done
 sleep 0.5
 
 echo "== 5.5 保存（第二次输出：矩形应右移 20px）=="
-click "$SAVE_X" "$BAR_Y"
+xdotool key Return
 sleep 1.5
 
 kill "$APP_PID" 2>/dev/null

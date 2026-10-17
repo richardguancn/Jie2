@@ -46,36 +46,12 @@ for i in 1 2 3 4 5 6; do
 done
 xdotool mouseup 1 sleep 0.5
 
-# 颜色按钮的 x 坐标：工具条顺序
-# rect52 ellipse52 arrow52 pencil52 marker64 mosaic64 blur52 eraser52
-# magnifier64 text52 number52 undo52 redo52 color40 save76 cancel60
-# 起点 x=100，间距 6；color 是第 15 个按钮（index 14）
-COLOR_X=$(python3 - <<'PY'
-# 必须与 selection_overlay.cpp 的 toolbarItems() **逐项一致**（16 项）。
-# 这里早期多写了一个 52（17 项），导致坐标整体右偏一格多，
-# 点击落到"保存"附近而不是"颜色" —— 表现为"颜色按钮点了没反应"。
-# 顺序：rect ellipse arrow pencil marker mosaic blur eraser
-#       magnifier text number undo redo color save cancel
-widths = [52,52,52,52,64,64,52,52,64,52,52,52,52,40,76,60]
-names  = ["rect","ellipse","arrow","pencil","marker","mosaic","blur","eraser",
-          "magnifier","text","number","undo","redo","color","save","cancel"]
-x = 100
-pos = {}
-for w, n in zip(widths, names):
-    pos[n] = x + w // 2
-    x += w + 6
-print(pos["color"])
-PY
-)
-# 工具条 y：选区底部(100+6*40=340) + 10（间距）+ 15（条高一半） = 365。
-# 早期版本写死 425 —— 落在工具条之外，点到了画布上（把选区清掉），
-# 表现为"颜色按钮点了没反应"。
-COLOR_Y=$((100 + 6 * 40 + 10 + 15))
-echo "颜色按钮 ($COLOR_X, $COLOR_Y)"
+# Shift+C 切换当前工具颜色，不依赖工具条布局。
+xdotool key 1
 
 echo "== 连点颜色按钮 4 次（配置为 3 色循环）=="
 for i in 1 2 3 4; do
-    xdotool mousemove --sync "$COLOR_X" "$COLOR_Y" sleep 0.2 click 1
+    xdotool key shift+c
     sleep 0.4
 done
 
