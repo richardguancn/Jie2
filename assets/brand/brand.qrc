@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/brand">
+    <file>app/icon-256.png</file>
+    <file>menubar/white-22.png</file>
+    <file>menubar/white-44.png</file>
+    <file>menubar/white-66.png</file>
+  </qresource>
+</RCC>
