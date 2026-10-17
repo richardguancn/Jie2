@@ -5,6 +5,7 @@
 # 只应影响本目录，不应波及 core 与 platform。
 
 add_executable(jie2 WIN32 MACOSX_BUNDLE
+    ../../assets/brand/brand.qrc
     annotation_render.cpp
     clothesline.cpp
     flight_overlay.cpp
@@ -37,7 +38,11 @@ target_link_libraries(jie2 PRIVATE
 
 
 if(APPLE)
+    set(JIE2_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/brand/AppIcon.icns")
+    target_sources(jie2 PRIVATE "${JIE2_APP_ICON}")
+    set_source_files_properties("${JIE2_APP_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(jie2 PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE "AppIcon.icns"
         MACOSX_BUNDLE_BUNDLE_NAME "截2"
         MACOSX_BUNDLE_GUI_IDENTIFIER "app.jie2.desktop"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
