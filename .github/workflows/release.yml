@@ -164,6 +164,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             zip
+            unzip
 
       - name: 校验 tag 与项目版本一致
         if: github.ref_type == 'tag'

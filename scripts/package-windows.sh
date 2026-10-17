@@ -76,12 +76,36 @@ echo "==> 1/5 收集 Qt 依赖进包（windeployqt）"
 # MSVC 的 --compiler-runtime，对 MinGW 编译的程序不作处理），而 jie2.exe 的
 # 导入表里明确依赖 libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll。
 # 不补这三件，包在没有装 MSYS2 的机器上直接起不来 —— 由下面的导入表核对兜住。
+#
+# 定位方式按可靠度排三层（MSYS2 踩过的坑：gcc -print-file-name 只在
+# 库搜索目录里找，返回的是裸文件名，而这几个 DLL 实际装在 <前缀>/bin 下）：
+#   1) 与编译器同一个 bin 目录 —— MSYS2/MinGW 的标准布局；
+#   2) gcc -print-file-name（交叉工具链布局可能不同）；
+#   3) PATH 里逐目录找 —— 兜底。
+CC_BIN_DIR="$(dirname "$(command -v "${CXX:-gcc}")")"
+echo "  编译器 bin 目录：$CC_BIN_DIR"
 for lib in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-    src="$(gcc -print-file-name="$lib" 2>/dev/null || true)"
-    if [ -n "$src" ] && [ -f "$src" ] && [ "$src" != "$lib" ]; then
+    src=""
+    for cand in "$CC_BIN_DIR/$lib" "$(gcc -print-file-name="$lib" 2>/dev/null || true)"; do
+        if [ -n "$cand" ] && [ -f "$cand" ] && [ "$cand" != "$lib" ]; then
+            src="$cand"
+            break
+        fi
+    done
+    if [ -z "$src" ]; then
+        IFS_OLD="$IFS"; IFS=':'
+        for dir in $PATH; do
+            if [ -f "$dir/$lib" ]; then
+                src="$dir/$lib"
+                break
+            fi
+        done
+        IFS="$IFS_OLD"
+    fi
+    if [ -n "$src" ]; then
         cp "$src" "$PKG/"
     else
-        echo "错误：找不到 MinGW 运行时 $lib（gcc -print-file-name 返回：${src:-空}）" >&2
+        echo "错误：找不到 MinGW 运行时 $lib（编译器 bin 目录与 PATH 都没有）" >&2
         exit 1
     fi
 done
