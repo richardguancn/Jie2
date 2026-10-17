@@ -16,7 +16,13 @@ set -eu
 BUILD_DIR="${1:-build-linux}"
 OUT_DIR="${2:-dist}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="0.1.0"
+# 版本从 CMakeLists.txt 解析，与 deb / rpm / macOS 打包统一来源
+# （早期这里是硬编码，版本一改就会产出名不符实的包）。
+VERSION="$(grep -m1 -E '^[[:space:]]+VERSION [0-9]+\.[0-9]+\.[0-9]+' "$ROOT/CMakeLists.txt" | awk '{print $2}')"
+if [ -z "$VERSION" ]; then
+    echo "错误：无法从 CMakeLists.txt 解析版本号" >&2
+    exit 1
+fi
 ARCH="$(uname -m)"
 
 JIE2_BIN="$ROOT/$BUILD_DIR/src/ui/jie2"

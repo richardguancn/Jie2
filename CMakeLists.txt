@@ -11,8 +11,10 @@ endif()
 
 # 语言包含 C：jie2-line（Wayland layer-shell 顶部条）需要编译
 # wayland-scanner 生成的 .c 协议代码（interface 表符号）。
+# 版本号在这里是唯一来源：打包脚本（deb / rpm / AppImage / macOS）都从本行
+# 解析版本，发布 tag 必须与它一致（.github/workflows/release.yml 会校验）。
 project(jie2
-    VERSION 0.1.0
+    VERSION 0.0.1
     DESCRIPTION "截2 — 跨平台截图 / 标注 / 贴图工具"
     LANGUAGES C CXX)
 
