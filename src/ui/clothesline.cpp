@@ -29,7 +29,6 @@
 #include <QUrl>
 
 #include "ui/flight_overlay.h"
-#include "platform/platform.h"
 
 namespace jie2::ui {
 
@@ -1038,15 +1037,9 @@ void Clothesline::mousePressEvent(QMouseEvent* event) {
             const QString path = QString::fromStdString(entries_[index].entry.path);
             auto* menu = createContextMenu(path);
             menuOpen_ = true;
-#ifdef Q_OS_MACOS
-            if (QGuiApplication::platformName() == QStringLiteral("cocoa") && menu->toNSMenu()) {
-                const QPoint point = event->globalPosition().toPoint();
-                platform::popupMacContextMenu(menu->toNSMenu(), point.x(), point.y());
-            } else
-#endif
-            {
-                menu->exec(event->globalPosition().toPoint());
-            }
+            // 让 Qt 管理菜单的显示、选择与动作分发。只弹出 toNSMenu()
+            // 得到的原生对象会绕过 QMenu 的生命周期，导致选择未送达 QAction。
+            menu->exec(event->globalPosition().toPoint());
             menuOpen_ = false;
             menu->deleteLater();
         } else {

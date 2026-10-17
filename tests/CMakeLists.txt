@@ -23,15 +23,20 @@ if(TARGET Qt6::Widgets)
     if(TARGET Qt6::Test)
         add_executable(jie2_ui_alignment_tests
             ui_alignment_tests.cpp
+            ../assets/brand/brand.qrc
             ../src/ui/selection_overlay.cpp
             ../src/ui/annotation_render.cpp
             ../src/ui/clothesline.cpp
             ../src/ui/flight_overlay.cpp
             ../src/ui/pin_window.cpp
+            ../src/ui/tray.cpp
+            ../src/ui/theme.cpp
+            ../src/ui/ocr_runner.cpp
+            ../src/ui/single_instance.cpp
         )
         target_include_directories(jie2_ui_alignment_tests PRIVATE ../src)
         target_link_libraries(jie2_ui_alignment_tests PRIVATE
-            jie2_core jie2_platform Qt6::Widgets Qt6::Test)
+            jie2_core jie2_platform Qt6::Widgets Qt6::Test Qt6::Network)
         add_test(NAME ui_alignment_tests COMMAND jie2_ui_alignment_tests)
         set_tests_properties(ui_alignment_tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

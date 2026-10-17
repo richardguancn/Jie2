@@ -6,6 +6,12 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDebug>
+#include <QMenu>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QDesktopServices>
+#include <QProcess>
+#include <QUrl>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -188,7 +194,9 @@ PinWindow* PinWindow::fromClipboard(QString* error) {
             const QString path = urls.first().toLocalFile();
             const QImage image(path);
             if (!image.isNull()) {
-                return new PinWindow(image);
+                auto* pin = new PinWindow(image);
+                pin->filePath_ = QFileInfo(path).absoluteFilePath();
+                return pin;
             }
             // 非图像文件 → 当作文本贴出（Snipaste 语义）。
             return new PinWindow(imageFromText(path));
@@ -434,6 +442,98 @@ bool PinWindow::saveTo(const QString& path) const {
     return ok;
 }
 
+void PinWindow::restoreOriginal() {
+    rotation_ = 0;
+    flipH_ = flipV_ = inverted_ = false;
+    resetTo100();
+}
+
+bool PinWindow::replaceFromFile(const QString& path) {
+    const QImage image(path);
+    if (image.isNull()) return false;
+    source_ = image;
+    filePath_ = QFileInfo(path).absoluteFilePath();
+    restoreOriginal();
+    return true;
+}
+
+QMenu* PinWindow::createContextMenu() {
+    auto* menu = new QMenu(this);
+    menu->addAction(QStringLiteral("还原"), this, &PinWindow::restoreOriginal);
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("复制图像"), this, &PinWindow::copyToClipboard);
+    menu->addAction(QStringLiteral("图像另存为…"), this, [this] {
+        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("图像另存为"),
+            QStringLiteral("贴图.png"), QStringLiteral("PNG 图像 (*.png);;JPEG 图像 (*.jpg *.jpeg)"));
+        if (path.isEmpty()) return;
+        if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".png");
+        if (saveTo(path)) filePath_ = QFileInfo(path).absoluteFilePath();
+        else QMessageBox::warning(this, QStringLiteral("保存失败"), QStringLiteral("图片未能保存，请检查保存位置是否可写。"));
+    });
+    menu->addSeparator();
+    auto* shadow = menu->addAction(QStringLiteral("窗口阴影"));
+    shadow->setCheckable(true);
+    shadow->setChecked(!windowFlags().testFlag(Qt::NoDropShadowWindowHint));
+    connect(shadow, &QAction::triggered, this, [this](bool on) {
+        const auto location = pos();
+        const bool visible = isVisible();
+        setWindowFlag(Qt::NoDropShadowWindowHint, !on);
+        move(location);
+        if (visible) show();
+    });
+    menu->addSeparator();
+    auto* processing = menu->addMenu(QStringLiteral("图像处理"));
+    processing->addAction(QStringLiteral("向左旋转 90°"), this, &PinWindow::rotateCounterClockwise);
+    processing->addAction(QStringLiteral("向右旋转 90°"), this, &PinWindow::rotateClockwise);
+    processing->addAction(QStringLiteral("水平翻转"), this, &PinWindow::flipHorizontal);
+    processing->addAction(QStringLiteral("垂直翻转"), this, &PinWindow::flipVertical);
+    auto* invert = processing->addAction(QStringLiteral("反色"), this, &PinWindow::toggleInvert);
+    invert->setCheckable(true);
+    invert->setChecked(inverted_);
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("粘贴"), this, &PinWindow::pasteRequested);
+    menu->addAction(QStringLiteral("替换为文件…"), this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("替换为文件"), {},
+            QStringLiteral("图像 (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff);;所有文件 (*)"));
+        if (!path.isEmpty() && !replaceFromFile(path))
+            QMessageBox::warning(this, QStringLiteral("无法替换"), QStringLiteral("无法读取这张图片，原贴图已保留。"));
+    });
+    auto* groups = menu->addMenu(QStringLiteral("移动到分组"));
+    for (int i = 0; i < groupCount_; ++i) {
+        auto* action = groups->addAction(QStringLiteral("分组 %1").arg(i + 1));
+        action->setCheckable(true);
+        action->setChecked(group_ == i);
+        connect(action, &QAction::triggered, this, [this, i] {
+            if (group_ != i) { group_ = i; emit groupChanged(); }
+        });
+    }
+    auto* reveal = menu->addAction(QStringLiteral("在文件夹中查看"), this, [this] {
+#ifdef Q_OS_MACOS
+        QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), filePath_});
+#else
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(filePath_).absolutePath()));
+#endif
+    });
+    reveal->setEnabled(!filePath_.isEmpty() && QFileInfo::exists(filePath_));
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("关闭"), this, &QWidget::hide);
+    menu->addAction(QStringLiteral("销毁"), this, &QWidget::close);
+    menu->addSeparator();
+    const QSize size = transformed().size();
+    auto* dimensions = menu->addMenu(QStringLiteral("%1 × %2").arg(size.width()).arg(size.height()));
+    for (int percent : {25, 50, 75, 100, 150, 200, 400}) {
+        auto* action = dimensions->addAction(QStringLiteral("%1%").arg(percent));
+        action->setCheckable(true);
+        action->setChecked(qAbs(scale_ * 100 - percent) < 0.01 && !thumbnail_);
+        connect(action, &QAction::triggered, this, [this, percent] {
+            thumbnail_ = false;
+            if (qAbs(scale_ * 100 - percent) < 0.01) rebuild();
+            else applyScaleFactor(percent / (100.0 * scale_));
+        });
+    }
+    return menu;
+}
+
 void PinWindow::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     const QImage base = transformed();
@@ -489,8 +589,11 @@ void PinWindow::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (event->button() == Qt::RightButton) {
-        // 右键菜单：关闭 / 复制 / 穿透 / 反色（简化版，完整分组管理在 M4 增补）。
-        close();
+        dragging_ = false;
+        auto* menu = createContextMenu();
+        const QPoint point = event->globalPosition().toPoint();
+        menu->exec(point);
+        menu->deleteLater();
         return;
     }
     QWidget::mousePressEvent(event);

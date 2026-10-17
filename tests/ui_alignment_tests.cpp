@@ -1,15 +1,52 @@
 #include <QtTest>
 #include <QSignalSpy>
+#include <QClipboard>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QMenu>
 #include <QScreen>
 #include <QPainter>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QScopeGuard>
+#include "ui/tray.h"
 #include "ui/clothesline.h"
 #include "ui/pin_window.h"
 #include "ui/selection_overlay.h"
 
 namespace jie2::ui {
+class MenuTestPlatform final : public platform::Platform {
+public:
+    mutable int captures = 0;
+    mutable int recognitions = 0;
+    std::string name() const override { return "menu-test"; }
+    core::PlatformCapabilities probe() const override {
+        core::PlatformCapabilities c;
+        c.session = core::SessionType::MacOS;
+        c.screenCapture.status = c.globalHotkey.status = c.alwaysOnTop.status =
+            c.layerShell.status = c.clipboardImage.status = core::CapabilityStatus::Available;
+        return c;
+    }
+    bool grabHotkey(const platform::HotkeySpec&, platform::HotkeyCallback, void*, std::string*) override { return true; }
+    void releaseAllHotkeys() override {}
+    std::vector<platform::DisplayInfo> displays() const override {
+        const auto r = QGuiApplication::primaryScreen()->geometry();
+        return {{"test", "test", {0, 0, r.width(), r.height()}, 1, true}};
+    }
+    platform::CaptureResult captureRegion(const core::Rect&) const override {
+        ++captures;
+        const auto r = QGuiApplication::primaryScreen()->geometry();
+        core::ImageBuffer image(r.width(), r.height(), core::PixelFormat::RGBA8888);
+        return platform::CaptureResult::success(std::move(image));
+    }
+    platform::CaptureResult captureDisplay(const std::string&) const override { return captureRegion({}); }
+    platform::CaptureResult captureAll() const override { return captureRegion({}); }
+    std::vector<core::Rect> windowRects() const override { return {}; }
+    core::OcrResult recognizeText(const core::ImageBuffer&, const std::string&) const override {
+        ++recognitions;
+        return core::OcrResult::success("菜单识别验证", "system-test");
+    }
+};
 class UiAlignmentTest : public QObject {
     Q_OBJECT
 private slots:
@@ -226,6 +263,58 @@ private slots:
         QCOMPARE(menu->actions().last()->text(), QStringLiteral("从衣架取下（保留文件）"));
         delete menu;
     }
+    void clotheslineContextMenuClick_data() {
+        QTest::addColumn<int>("row");
+        for (int row : {-1, 0, 1, 2, 3, 4, 6})
+            QTest::newRow(qPrintable(QString::number(row))) << row;
+    }
+    void clotheslineContextMenuClick() {
+        QFETCH(int, row);
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu-sample.png");
+        QImage image(320, 180, QImage::Format_RGB32);
+        image.fill(Qt::blue); QVERIFY(image.save(path));
+        Clothesline line;
+        line.setManagedDirectory(temp.path());
+        line.setEntries({{path.toStdString(), "", 320, 180}});
+        QSignalSpy copied(&line, &Clothesline::copyRequested);
+        QSignalSpy opened(&line, &Clothesline::openRequested);
+        QSignalSpy annotated(&line, &Clothesline::annotateRequested);
+        QSignalSpy revealed(&line, &Clothesline::revealRequested);
+        QSignalSpy saved(&line, &Clothesline::saveDesktopRequested);
+        QSignalSpy discarded(&line, &Clothesline::discardRequested);
+        const QList<QSignalSpy*> spies{&copied, &opened, &annotated, &revealed, &saved, &discarded};
+        line.revealForTest(QGuiApplication::primaryScreen()->geometry());
+        QTRY_VERIFY(qAbs(line.contentOffsetY_) < 0.5);
+        bool clicked = false;
+        QTimer::singleShot(100, &line, [&] {
+            auto* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!popup || row >= popup->actions().size()) return;
+            clicked = true;
+            const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+            if (row == 0 && !folder.isEmpty())
+                popup->grab().save(folder + "/clothesline-click-menu.png");
+            if (row < 0) { QTest::keyClick(popup, Qt::Key_Escape); return; }
+            QTest::mouseClick(popup, Qt::LeftButton, Qt::NoModifier,
+                              popup->actionGeometry(popup->actions().at(row)).center());
+        });
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&timeout, &QTimer::timeout, &line, [&] {
+            for (auto* menu : line.findChildren<QMenu*>()) menu->close();
+        });
+        timeout.start(2000);
+        QTest::mouseClick(&line, Qt::RightButton, Qt::NoModifier,
+                          line.cardRectF(0).center().toPoint());
+        QVERIFY(clicked);
+        for (int i = 0; i < spies.size(); ++i) {
+            QCOMPARE(spies[i]->count(), i == (row == 6 ? 5 : row) ? 1 : 0);
+            if (!spies[i]->isEmpty()) QCOMPARE(spies[i]->first().first().toString(), path);
+        }
+        QVERIFY(!line.menuOpen_);
+        QVERIFY(QFileInfo::exists(path));
+        line.hideNow();
+    }
     void referencePreviews() {
         const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
         if (folder.isEmpty()) return;
@@ -290,6 +379,77 @@ private slots:
         line.setEntries({});
         QVERIFY(line.copiedPath_.isEmpty());
         line.hideNow();
+    }
+    void pinContextMenu() {
+        QImage image(400, 240, QImage::Format_ARGB32); image.fill(Qt::red);
+        PinWindow pin(image);
+        pin.move(400, 300); pin.show();
+        QSignalSpy destroyed(&pin, &PinWindow::closed);
+        QSignalSpy pasted(&pin, &PinWindow::pasteRequested);
+        QSignalSpy grouped(&pin, &PinWindow::groupChanged);
+        auto menu = std::unique_ptr<QMenu>(pin.createContextMenu());
+        auto find = [](QMenu* menu, const QString& text) -> QAction* {
+            for (auto* action : menu->actions()) if (action->text() == text) return action;
+            return nullptr;
+        };
+        QStringList labels;
+        for (auto* action : menu->actions()) if (!action->isSeparator()) labels << action->text();
+        QCOMPARE(labels, QStringList({"还原", "复制图像", "图像另存为…", "窗口阴影", "图像处理",
+            "粘贴", "替换为文件…", "移动到分组", "在文件夹中查看", "关闭", "销毁", "400 × 240"}));
+        QVERIFY(!find(menu.get(), "在文件夹中查看")->isEnabled());
+        find(menu.get(), "粘贴")->trigger(); QCOMPARE(pasted.count(), 1);
+        if (QGuiApplication::platformName() == "offscreen") {
+            find(menu.get(), "复制图像")->trigger();
+            QCOMPARE(QApplication::clipboard()->image(), image);
+            QTimer::singleShot(10, &pin, [&pin] {
+                for (auto* popup : pin.findChildren<QMenu*>()) if (popup->isVisible()) popup->close();
+            });
+            QTest::mouseClick(&pin, Qt::RightButton, Qt::NoModifier, QPoint(10, 10));
+            QVERIFY(pin.isVisible()); QCOMPARE(destroyed.count(), 0);
+        }
+        auto* processing = find(menu.get(), "图像处理")->menu();
+        find(processing, "向右旋转 90°")->trigger();
+        QCOMPARE(pin.displayedImage().size(), QSize(240, 400));
+        find(processing, "反色")->trigger(); QVERIFY(pin.inverted());
+        pin.toggleDetailAt(QPoint(50, 60)); QVERIFY(pin.detailMode_);
+        find(menu.get(), "还原")->trigger();
+        QVERIFY(!pin.detailMode_); QVERIFY(!pin.inverted()); QCOMPARE(pin.size(), QSize(400, 240));
+        find(find(menu.get(), "400 × 240")->menu(), "200%")->trigger();
+        QCOMPARE(pin.size(), QSize(800, 480));
+        pin.resetTo100(); pin.toggleThumbnail();
+        QVERIFY(pin.width() < 400);
+        find(find(menu.get(), "400 × 240")->menu(), "100%")->trigger();
+        QCOMPARE(pin.size(), QSize(400, 240));
+        const QPoint beforeShadow = pin.pos();
+        find(menu.get(), "窗口阴影")->trigger();
+        QVERIFY(!pin.windowFlags().testFlag(Qt::NoDropShadowWindowHint));
+        QCOMPARE(pin.pos(), beforeShadow); QVERIFY(pin.isVisible());
+        find(find(menu.get(), "移动到分组")->menu(), "分组 2")->trigger();
+        QCOMPARE(pin.group(), 1); QCOMPARE(grouped.count(), 1);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        QImage replacement(120, 80, QImage::Format_ARGB32); replacement.fill(Qt::blue);
+        const QString path = temporary.filePath("replacement.png"); QVERIFY(replacement.save(path));
+        QVERIFY(pin.replaceFromFile(path)); QCOMPARE(pin.size(), QSize(120, 80));
+        QVERIFY(!pin.replaceFromFile(temporary.filePath("missing.png")));
+        QCOMPARE(pin.sourceImage(), replacement);
+        const QString exportPath = temporary.filePath("export.png");
+        QVERIFY(pin.saveTo(exportPath)); QCOMPARE(QImage(exportPath), replacement);
+        menu.reset(pin.createContextMenu());
+        QVERIFY(find(menu.get(), "在文件夹中查看")->isEnabled());
+        QVERIFY(find(menu.get(), "120 × 80"));
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty()) {
+            menu->ensurePolished(); menu->adjustSize();
+            QVERIFY(menu->grab().save(folder + "/pin-context-menu.png"));
+        }
+        find(menu.get(), "关闭")->trigger();
+        QVERIFY(!pin.isVisible()); QCOMPARE(destroyed.count(), 0);
+        pin.show(); QVERIFY(pin.isVisible());
+        pin.toggleDetailAt(QPoint(40, 30));
+        menu.reset(pin.createContextMenu());
+        QVERIFY(find(menu.get(), "120 × 80"));
+        find(menu.get(), "销毁")->trigger(); QCOMPARE(destroyed.count(), 1);
     }
     void pinDetail_data() {
         QTest::addColumn<QPoint>("clicked");
@@ -369,6 +529,137 @@ private slots:
         QCOMPARE(line.itemCount(), 0);
         QVERIFY(QFileInfo::exists(path));
     }
+    void trayMenuClicks() {
+        QTemporaryDir temp;
+        auto platform = std::make_unique<MenuTestPlatform>();
+        auto* backend = platform.get();
+        TrayController controller(std::move(platform));
+        controller.configPath_ = temp.filePath("config");
+        controller.clotheslineEnabled_ = false;
+        controller.clipboardWatchEnabled_ = false;
+        controller.triggerEnabled_ = false;
+        controller.setupTriggerCorner();
+        QVERIFY(controller.start());
+        QVERIFY(controller.clothesline_ != nullptr);
+        QVERIFY(!controller.clothesline_->watchEnabled_);
+        auto* clipboard = QApplication::clipboard();
+        auto* backup = new QMimeData;
+        if (const auto* mime = clipboard->mimeData()) {
+            for (const auto& format : mime->formats())
+                backup->setData(format, mime->data(format));
+        }
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(backup); });
+        auto find = [](QMenu* menu, const QString& text) -> QAction* {
+            for (auto* a : menu->actions()) if (a->text().startsWith(text)) return a;
+            return nullptr;
+        };
+        auto open = [&] {
+#ifdef Q_OS_MACOS
+            controller.tray_->activated(QSystemTrayIcon::Trigger);
+#else
+            controller.menu_->popup(QPoint(50, 50));
+#endif
+        };
+        auto click = [&](const QString& text) {
+            open();
+            QTRY_VERIFY(controller.menu_->isVisible());
+            auto* action = find(controller.menu_, text);
+            QVERIFY(action);
+            QTest::mouseClick(controller.menu_, Qt::LeftButton, Qt::NoModifier,
+                              controller.menu_->actionGeometry(action).center());
+            QTRY_VERIFY(!controller.menu_->isVisible());
+            QCoreApplication::processEvents();
+        };
+        click("衣架（");
+        QTRY_VERIFY(controller.clotheslineEnabled_);
+        QVERIFY(controller.clothesline_->watchEnabled_);
+        controller.rebuildMenu();
+        QVERIFY(find(controller.menu_, "衣架（")->isChecked());
+        click("衣架（");
+        QTRY_VERIFY(!controller.clotheslineEnabled_);
+        controller.rebuildMenu();
+        QVERIFY(!find(controller.menu_, "衣架（")->isChecked());
+        click("复制图像时"); QTRY_VERIFY(controller.clipboardWatchEnabled_);
+        click("复制图像时"); QTRY_VERIFY(!controller.clipboardWatchEnabled_);
+        click("触发角（"); QTRY_VERIFY(controller.triggerEnabled_);
+        QVERIFY(controller.cornerTimer_->isActive());
+        click("触发角（"); QTRY_VERIFY(!controller.triggerEnabled_);
+        QVERIFY(!controller.cornerTimer_->isActive());
+        for (const QString label : {QString("圆角（"), QString("边框（"), QString("阴影")}) {
+            open(); QTRY_VERIFY(controller.menu_->isVisible());
+            auto* sub = find(controller.menu_, "输出装饰")->menu();
+            sub->popup(controller.menu_->mapToGlobal(QPoint(controller.menu_->width(), 40)));
+            QTRY_VERIFY(sub->isVisible());
+            auto* action = find(sub, label); QVERIFY(action);
+            const bool before = action->isChecked();
+            QTest::mouseClick(sub, Qt::LeftButton, Qt::NoModifier, sub->actionGeometry(action).center());
+            QCoreApplication::processEvents();
+            QCOMPARE(label.startsWith("圆角") ? controller.roundEnabled_ :
+                     label.startsWith("边框") ? controller.borderEnabled_ : controller.shadowEnabled_, !before);
+            controller.menu_->hide();
+        }
+        clipboard->setText("菜单测试贴图");
+        click("贴图（"); QTRY_COMPARE(controller.pinCount(), 1);
+        QVERIFY(controller.pins_.front()->isVisible());
+        controller.closeAllPins(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QImage image(160, 80, QImage::Format_RGB32); image.fill(Qt::white);
+        clipboard->setImage(image);
+        click("贴图（"); QTRY_COMPARE(controller.pinCount(), 1);
+        controller.closeAllPins(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        click("文字识别（"); QTRY_COMPARE(backend->recognitions, 1);
+        QCOMPARE(clipboard->text(), QString("菜单识别验证"));
+        clipboard->clear();
+        for (const QString label : {QString("贴图（"), QString("文字识别（"), QString("识别二维码")}) {
+            click(label);
+            QTRY_VERIFY(qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            QVERIFY(!box->text().isEmpty());
+            QTest::keyClick(box, Qt::Key_Return);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        int overlays = 0;
+        QTimer dismiss;
+        connect(&dismiss, &QTimer::timeout, [&] {
+            for (auto* widget : QApplication::topLevelWidgets()) {
+                if (auto* overlay = qobject_cast<SelectionOverlay*>(widget); overlay && overlay->isVisible()) {
+                    ++overlays;
+                    dismiss.stop();
+                    QTimer::singleShot(100, overlay, [overlay] {
+                        QTest::keyClick(overlay, Qt::Key_Escape);
+                    });
+                }
+                if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible())
+                    QTest::keyClick(box, Qt::Key_Return);
+            }
+        });
+        dismiss.start(20);
+        if (QGuiApplication::platformName() == "cocoa") {
+            // macOS 的嵌套窗口需要应用主循环；离屏运行保持 QtTest 自身循环，
+            // 避免退出应用主循环后影响同进程中的其他测试。
+            QTimer::singleShot(0, &controller, [&] {
+                click("截图（");
+                click("退出截2");
+            });
+            QCOMPARE(QCoreApplication::exec(), 0);
+        } else {
+            click("截图（");
+        }
+        QTRY_COMPARE(backend->captures, 1);
+        QCOMPARE(overlays, 1);
+        dismiss.stop();
+        click("平台能力");
+        QTRY_VERIFY(qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
+        auto* capabilityBox = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(capabilityBox->text().contains("menu-test"));
+        QTest::keyClick(capabilityBox, Qt::Key_Return);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        open(); QTRY_VERIFY(controller.menu_->isVisible());
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty()) QVERIFY(controller.menu_->grab().save(folder + "/tray-menu.png"));
+        QTest::keyClick(controller.menu_, Qt::Key_Escape);
+        QTRY_VERIFY(!controller.menu_->isVisible());
+    }
+
 };
 }
 QTEST_MAIN(jie2::ui::UiAlignmentTest)

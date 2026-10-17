@@ -230,7 +230,7 @@ bool TrayController::start() {
         qInfo().noquote() << QStringLiteral(
             "[jie2] Wayland 会话：衣架改用 layer-shell 顶部条（jie2-line）");
         updateWaylandLine();
-    } else if (clotheslineEnabled_) {
+    } else if (capabilities_.session != core::SessionType::Wayland) {
         clothesline_ = new Clothesline();
         clothesline_->setManagedDirectory(captureDirectory());
         clothesline_->setDarkTheme(darkTheme_);  // 主题跟随系统（v2.6）
@@ -324,7 +324,7 @@ bool TrayController::start() {
                     refreshClothesline();
                 });
         refreshClothesline();
-        clothesline_->setWatchEnabled(true);
+        clothesline_->setWatchEnabled(clotheslineEnabled_);
     }
 
     // 剪贴板图片监听（M3 增补）：复制图像自动挂上衣架。
@@ -336,11 +336,23 @@ bool TrayController::start() {
 
     menu_ = new QMenu();
     rebuildMenu();
+#ifdef Q_OS_MACOS
+    // 使用 Qt 弹出菜单管理完整的点击分发。不要同时设置原生 contextMenu，
+    // 否则系统会先接管点击，Qt 菜单中的动作可能无法收到事件。
+    connect(tray_, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+                if (reason == QSystemTrayIcon::Trigger ||
+                    reason == QSystemTrayIcon::Context) {
+                    QTimer::singleShot(0, this, [this] {
+                        if (!menu_->isVisible()) {
+                            const QRect anchor = tray_->geometry();
+                            menu_->popup(anchor.isValid() ? anchor.bottomLeft() : QCursor::pos());
+                        }
+                    });
+                }
+            });
+#else
     tray_->setContextMenu(menu_);
-
-    // macOS 的左键菜单由 setContextMenu 交给系统显示；不要在激活时
-    // 再弹诊断对话框，否则每次打开菜单都会被“平台能力”打断。
-#ifndef Q_OS_MACOS
     connect(tray_, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
                 if (reason == QSystemTrayIcon::Trigger) {
@@ -372,34 +384,34 @@ void TrayController::rebuildMenu() {
 
     auto* captureAction = menu_->addAction(QStringLiteral("截图（选择区域）"));
     connect(captureAction, &QAction::triggered, this,
-            &TrayController::triggerCapture);
+            &TrayController::triggerCapture, Qt::QueuedConnection);
 
     // 贴图（M4）：把剪贴板内容贴成置顶窗口。
     auto* pinAction = menu_->addAction(QStringLiteral("贴图（从剪贴板）"));
-    connect(pinAction, &QAction::triggered, this, &TrayController::triggerPin);
+    connect(pinAction, &QAction::triggered, this, &TrayController::triggerPin, Qt::QueuedConnection);
 
     // 文字识别（M5）：对剪贴板图像跑 OCR。
     auto* ocrAction = menu_->addAction(
         QStringLiteral("文字识别（OCR · %1）")
             .arg(QString::fromStdString(core::toString(ocrConfig_.backend))));
-    connect(ocrAction, &QAction::triggered, this, &TrayController::triggerOcr);
+    connect(ocrAction, &QAction::triggered, this, &TrayController::triggerOcr, Qt::QueuedConnection);
 
     // 二维码/条形码识别（M6，专业版对齐项 barcode-scan）。
     auto* barcodeAction =
         menu_->addAction(QStringLiteral("识别二维码/条形码"));
     connect(barcodeAction, &QAction::triggered, this,
-            &TrayController::triggerBarcodeScan);
+            &TrayController::triggerBarcodeScan, Qt::QueuedConnection);
 
     if (!pins_.empty()) {
         auto* hidePins = menu_->addAction(
             pinsHidden_ ? QStringLiteral("显示全部贴图（%1）").arg(pins_.size())
                         : QStringLiteral("隐藏全部贴图（%1）").arg(pins_.size()));
         connect(hidePins, &QAction::triggered, this,
-                &TrayController::toggleHidePins);
+                &TrayController::toggleHidePins, Qt::QueuedConnection);
         auto* savePins = menu_->addAction(
             QStringLiteral("保存全部贴图（%1）").arg(pins_.size()));
         connect(savePins, &QAction::triggered, this,
-                &TrayController::saveAllPins);
+                &TrayController::saveAllPins, Qt::QueuedConnection);
 
         // 贴图分组（专业版对齐项）：只显示当前组的贴图。
         auto* groupMenu = menu_->addMenu(
@@ -410,15 +422,15 @@ void TrayController::rebuildMenu() {
             item->setCheckable(true);
             item->setChecked(g == currentPinGroup_);
             connect(item, &QAction::triggered, this,
-                    [this, g]() { switchPinGroup(g); });
+                    [this, g]() { switchPinGroup(g); }, Qt::QueuedConnection);
         }
         QAction* nextGroup = groupMenu->addAction(QStringLiteral("下一组"));
         connect(nextGroup, &QAction::triggered, this,
-                [this]() { switchPinGroup(-1); });
+                [this]() { switchPinGroup(-1); }, Qt::QueuedConnection);
 
         auto* closePins = menu_->addAction(QStringLiteral("关闭全部贴图"));
         connect(closePins, &QAction::triggered, this,
-                &TrayController::closeAllPins);
+                &TrayController::closeAllPins, Qt::QueuedConnection);
     }
 
     auto* hotkeyStatus = menu_->addAction(
@@ -449,7 +461,7 @@ void TrayController::rebuildMenu() {
             apply(on);
             saveConfig();
             rebuildMenu();
-        });
+        }, Qt::QueuedConnection);
     };
     makeToggle(QStringLiteral("圆角（半径 %1）").arg(roundRadius_), roundEnabled_,
                [this](bool on) { roundEnabled_ = on; });
@@ -469,21 +481,29 @@ void TrayController::rebuildMenu() {
         saveConfig();
         setupTriggerCorner();
         rebuildMenu();
-    });
+    }, Qt::QueuedConnection);
 
     // 衣架（M3，tendedero 合并）：指针停在屏幕顶边展开。
     QAction* clotheslineAction =
         menu_->addAction(QStringLiteral("衣架（顶边停留展开）"));
     clotheslineAction->setCheckable(true);
-    clotheslineAction->setChecked(clothesline_ != nullptr);
-    clotheslineAction->setEnabled(clothesline_ != nullptr);
+    clotheslineAction->setChecked(clotheslineEnabled_);
+    clotheslineAction->setEnabled(clothesline_ != nullptr ||
+                                 capabilities_.session == core::SessionType::Wayland);
     connect(clotheslineAction, &QAction::triggered, this, [this](bool on) {
         clotheslineEnabled_ = on;
         saveConfig();
         if (clothesline_ != nullptr) {
             clothesline_->setWatchEnabled(on);
+        } else if (capabilities_.session == core::SessionType::Wayland) {
+            if (on) {
+                waylandLineEnabled_ = true;
+                updateWaylandLine();
+            } else {
+                stopWaylandLine();
+            }
         }
-    });
+    }, Qt::QueuedConnection);
 
     // 剪贴板图像自动挂载（M3 增补，对齐 tendedero 的 "Hang copied images"）。
     QAction* clipWatch =
@@ -494,18 +514,18 @@ void TrayController::rebuildMenu() {
         clipboardWatchEnabled_ = on;
         saveConfig();
         rebuildMenu();
-    });
+    }, Qt::QueuedConnection);
 
     menu_->addSeparator();
 
     auto* capabilityAction = menu_->addAction(QStringLiteral("平台能力…"));
     connect(capabilityAction, &QAction::triggered, this,
-            &TrayController::showCapabilities);
+            &TrayController::showCapabilities, Qt::QueuedConnection);
 
     menu_->addSeparator();
 
     auto* quitAction = menu_->addAction(QStringLiteral("退出截2"));
-    connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+    connect(quitAction, &QAction::triggered, qApp, &QApplication::quit, Qt::QueuedConnection);
 }
 
 QString TrayController::deliverSelection(const SelectionOverlay::Outcome& outcome, QString* error,
@@ -1022,7 +1042,8 @@ void TrayController::setupTriggerCorner() {
 
 void TrayController::cornerTick() {
     // 遮罩（或任何模态窗口）打开期间不触发 —— 否则用户在截图时会反复触发。
-    if (captureInProgress_ || QApplication::activeModalWidget() != nullptr) {
+    if (captureInProgress_ || QApplication::activeModalWidget() != nullptr ||
+        QApplication::activePopupWidget() != nullptr) {
         cornerEnteredAt_ = 0;
         return;
     }
@@ -1357,6 +1378,12 @@ void TrayController::triggerPin() {
     });
 
     // 新贴图归入当前分组（专业版对齐项）。
+    pin->setGroupCount(pinGroupCount_);
+    connect(pin, &PinWindow::pasteRequested, this, &TrayController::triggerPin);
+    connect(pin, &PinWindow::groupChanged, this, [this, pin] {
+        pin->setVisible(!pinsHidden_ && pin->group() == currentPinGroup_);
+        rebuildMenu();
+    });
     pin->setGroup(currentPinGroup_);
 
     // Esc / Shift+Esc 动作（专业版 v2.8：可自定义）。
@@ -1769,6 +1796,17 @@ void TrayController::triggerOcr() {
 }
 
 void TrayController::note(const QString& title, const QString& body, bool warning) {
+    if (warning) {
+        // 常驻应用的系统通知可能被权限或专注模式隐藏，错误必须可见。
+        auto* box = new QMessageBox(QMessageBox::Warning, title, body,
+                                    QMessageBox::Ok);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->setWindowModality(Qt::ApplicationModal);
+        box->show();
+        box->raise();
+        box->activateWindow();
+        return;
+    }
     if (tray_ != nullptr && tray_->isSystemTrayAvailable()) {
         tray_->showMessage(title, body,
                            warning ? QSystemTrayIcon::Warning
@@ -1784,8 +1822,13 @@ void TrayController::showCapabilities() {
         QStringLiteral("实现：%1\n\n%2")
             .arg(QString::fromStdString(platform_->name()),
                  QString::fromStdString(capabilities_.describe()));
-    QMessageBox box(QMessageBox::Information, QStringLiteral("截2 平台能力"), text);
-    box.exec();
+    auto* box = new QMessageBox(QMessageBox::Information, QStringLiteral("截2 平台能力"),
+                                text, QMessageBox::Ok);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowModality(Qt::ApplicationModal);
+    box->show();
+    box->raise();
+    box->activateWindow();
 }
 
 void TrayController::registerHotkey() {

@@ -139,6 +139,7 @@ public:
     QImage decorateForOutput(const QImage& image) const;
 
 private:
+    friend class UiAlignmentTest;
     void rebuildMenu();
     void showCapabilities();
     void registerHotkey();

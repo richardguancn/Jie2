@@ -5,6 +5,8 @@
 #include <QString>  // 接口里有 QString 参数（头文件必须自包含）
 #include <QWidget>
 
+class QMenu;
+
 namespace jie2::ui {
 
 /// 「截2」贴图窗口（M4）—— 把图像作为置顶窗口钉在屏幕上。
@@ -35,6 +37,7 @@ public:
     /// 组号由托盘控制器在创建时分配，本类只保存与查询。
     void setGroup(int group) { group_ = group; }
     int group() const { return group_; }
+    void setGroupCount(int count) { groupCount_ = qMax(1, count); }
 
     /// 选中态（专业版对齐项 v2.4：Ctrl+A 全选贴图）。
     /// 选中的贴图会画高亮边框；拖动其中一张时其余选中的一起移动。
@@ -97,6 +100,8 @@ public:
 
 signals:
     void closed();
+    void pasteRequested();
+    void groupChanged();
 
     /// Ctrl+A（在任一贴图上按下）：请求托盘控制器全选/取消全选所有贴图。
     void selectAllRequested();
@@ -118,6 +123,9 @@ protected:
 private:
     friend class UiAlignmentTest;
     /// 按 原图 + 变换 + 缩放 重算显示图与窗口大小，并重绘。
+    QMenu* createContextMenu();
+    bool replaceFromFile(const QString& path);
+    void restoreOriginal();
     void rebuild();
     /// 当前显示图（含旋转/翻转/反色，不含缩放）。
     QImage transformed() const;
@@ -128,6 +136,8 @@ private:
     void applyOpacityDelta(double delta);
 
     QImage source_;          // 原图（不变）
+    int groupCount_ = 3;
+    QString filePath_;
     int group_ = 0;          // 所属贴图分组（0 基）
     int rotation_ = 0;       // 0/90/180/270（顺时针）
     bool flipH_ = false;
