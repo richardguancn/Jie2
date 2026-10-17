@@ -152,8 +152,10 @@ private slots:
         QTest::mouseRelease(&line, Qt::LeftButton, Qt::NoModifier, center);
         QCOMPARE(opened.count(), 1); QCOMPARE(copied.count(), 1);
         QTest::mousePress(&line, Qt::LeftButton, Qt::NoModifier, center);
-        QTest::qWait(520);
-        QCOMPARE(annotated.count(), 1);
+        // 长按阈值 450ms：用等待式断言而不是"睡 520ms 再比" ——
+        // CI 的 runner 负载高时定时器会晚到，硬计时会把正常行为判成失败
+        // （macOS 作业确实因此挂过一次）。
+        QTRY_COMPARE_WITH_TIMEOUT(annotated.count(), 1, 3000);
         QTest::mouseRelease(&line, Qt::LeftButton, Qt::NoModifier, center);
         QCOMPARE(copied.count(), 1);
         QCOMPARE(annotated.at(0).at(0).toString(), path);
@@ -658,6 +660,202 @@ private slots:
         if (!folder.isEmpty()) QVERIFY(controller.menu_->grab().save(folder + "/tray-menu.png"));
         QTest::keyClick(controller.menu_, Qt::Key_Escape);
         QTRY_VERIFY(!controller.menu_->isVisible());
+    }
+
+    /// README 配图：用真实控件离屏渲染演示图（只在设了 JIE2_UI_ARTIFACTS 时产出）。
+    /// 背景是代码画出来的"桌面"，不截取任何真实屏幕内容 —— 配图要进公开仓库。
+    void readmeFigures() {
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (folder.isEmpty()) return;
+        QDir().mkpath(folder);
+
+        // ---- 造一个像桌面的背景：渐变 + 光斑 + 两个"应用窗口" + 一块图片区 ----
+        const QSize logical(960, 600);
+        constexpr double kScale = 2.0;   // 按 Retina 渲染，文字与线条才清晰
+        QImage desktop(int(logical.width() * kScale), int(logical.height() * kScale),
+                       QImage::Format_RGB32);
+        {
+            QPainter p(&desktop);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(kScale, kScale);
+            QLinearGradient sky(0, 0, 0, logical.height());
+            sky.setColorAt(0.0, QColor("#16233a"));
+            sky.setColorAt(0.55, QColor("#25405c"));
+            sky.setColorAt(1.0, QColor("#0f1722"));
+            p.fillRect(QRectF(QPointF(0, 0), QSizeF(logical)), sky);
+            for (const auto& blob : {std::tuple<qreal, qreal, qreal, const char*>{
+                                         700, 120, 260, "#2f6f8f"},
+                                     std::tuple<qreal, qreal, qreal, const char*>{140, 520, 300, "#1f4a63"}}) {
+                QRadialGradient g(QPointF(std::get<0>(blob), std::get<1>(blob)), std::get<2>(blob));
+                QColor c(std::get<3>(blob)); c.setAlpha(150);
+                g.setColorAt(0.0, c); g.setColorAt(1.0, Qt::transparent);
+                p.fillRect(QRectF(QPointF(0, 0), QSizeF(logical)), g);
+            }
+            // 浅色"文档"窗口
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 236));
+            p.drawRoundedRect(QRectF(96, 74, 486, 356), 10, 10);
+            p.setBrush(QColor("#e6eaf1"));
+            p.drawRoundedRect(QRectF(96, 74, 486, 26), 10, 10);
+            p.drawRect(QRectF(96, 88, 486, 12));
+            for (int i = 0; i < 3; ++i) {
+                p.setBrush(QColor(i == 0 ? "#ff5f57" : i == 1 ? "#febc2e" : "#28c840"));
+                p.drawEllipse(QPointF(112 + i * 16, 87), 5, 5);
+            }
+            p.setBrush(QColor("#dbe1ea"));
+            for (int line = 0; line < 9; ++line) {
+                const qreal w = (line % 4 == 3) ? 210 : 400 - (line % 3) * 40;
+                p.drawRoundedRect(QRectF(120, 122 + line * 32, w, 10), 5, 5);
+            }
+            // 深色"代码"窗口
+            p.setBrush(QColor(18, 22, 28, 242));
+            p.drawRoundedRect(QRectF(618, 96, 286, 300), 10, 10);
+            p.setBrush(QColor("#242a33"));
+            p.drawRoundedRect(QRectF(618, 96, 286, 24), 10, 10);
+            p.drawRect(QRectF(618, 110, 286, 10));
+            const char* palette[] = {"#7dd3fc", "#fca5a5", "#fcd34d", "#a7f3d0", "#c4b5fd"};
+            for (int line = 0; line < 10; ++line) {
+                p.setBrush(QColor(palette[line % 5]));
+                const qreal w = 60 + ((line * 37) % 150);
+                p.drawRoundedRect(QRectF(640 + (line % 3) * 12, 140 + line * 24, w, 8), 4, 4);
+            }
+            // 一块"照片"区
+            QLinearGradient photo(0, 0, 1, 1);
+            photo.setColorAt(0.0, QColor("#f59e0b"));
+            photo.setColorAt(1.0, QColor("#ef4444"));
+            p.setBrush(photo);
+            p.drawRoundedRect(QRectF(120, 462, 250, 108), 8, 8);
+            p.end();
+        }
+
+        // 控件截图统一按"原始像素"处理：grab() 在 Retina 上是 2 倍像素，
+        // 显式把 DPR 置 1 后，尺寸即像素尺寸，合成时不会再被二次缩放
+        // （踩过：保留 DPR=2 直接画到 1 倍画布上，图会被放大并溢出边界）。
+        const auto grabPixels = [](QWidget* widget) {
+            QPixmap shot = widget->grab();
+            shot.setDevicePixelRatio(1.0);
+            return shot;
+        };
+
+        // ---- 图 1：标注遮罩（选中一块区域 + 若干标注 + 工具条）----
+        QImage annotatedResult;
+        {
+            SelectionOverlayOptions options;
+            options.darkTheme = false;
+            SelectionOverlay overlay(QPixmap::fromImage(desktop), kScale, nullptr, options);
+            overlay.resize(logical);
+            overlay.frozenLogicalRect_ = overlay.rect();
+            overlay.hasSelection_ = true;
+            overlay.selectionRect_ = QRect(150, 100, 520, 300);
+            const auto px = [&overlay](int x, int y) {
+                return core::Point{int(x * kScale), int(y * kScale)};
+            };
+            core::Annotation box;
+            box.tool = core::AnnotationTool::Rect;
+            box.style.color = {239, 68, 68, 255};
+            box.style.width = 3;
+            box.style.cornerRadius = 10;
+            box.points = {px(196, 148), px(372, 236)};
+            overlay.annotations_.add(box);
+            core::Annotation arrow;
+            arrow.tool = core::AnnotationTool::Arrow;
+            arrow.style.color = {250, 204, 21, 255};
+            arrow.style.width = 4;
+            arrow.points = {px(392, 200), px(486, 250)};
+            overlay.annotations_.add(arrow);
+            core::Annotation text;
+            text.tool = core::AnnotationTool::Text;
+            text.style.color = {250, 204, 21, 255};
+            text.style.fontSize = 30;
+            text.points = {px(392, 138)};
+            text.text = "看这里";
+            overlay.annotations_.add(text);
+            core::Annotation number;
+            number.tool = core::AnnotationTool::Number;
+            number.style.color = {239, 68, 68, 255};
+            number.style.width = 3;
+            number.points = {px(500, 300)};
+            number.text = "1";
+            overlay.annotations_.add(number);
+            overlay.composedDirty_ = true;
+            overlay.show();
+            QVERIFY(grabPixels(&overlay).save(folder + "/selection-overlay.png"));
+
+            // ---- 图 2：标注结果（选中区域按像素合成后的成品）----
+            annotatedResult = overlay.buildFinalImage();
+            QVERIFY(!annotatedResult.isNull()
+                    && annotatedResult.save(folder + "/annotated-result.png"));
+            overlay.hide();
+        }
+
+        // ---- 图 4：贴图窗口（把上面标注好的截图贴到桌面上，带右键菜单）----
+        {
+            // 贴的就是上面那张标注成品 —— 贴图的典型用法：截完标注、贴到屏幕上对照。
+            QVERIFY(!annotatedResult.isNull());
+            PinWindow pin(annotatedResult);
+            pin.applyScaleFactor(0.4);   // 缩小，场景里窗口与菜单并排都完整可见
+            pin.show();
+            QTest::qWait(150);
+            std::unique_ptr<QMenu> menu(pin.createContextMenu());
+            menu->ensurePolished();
+            menu->adjustSize();
+            const QPixmap pinShot = grabPixels(&pin);
+            const QPixmap menuShot = grabPixels(menu.get());
+            // 全部用像素坐标：scene 是 kScale 倍画布，贴图与菜单按各自的
+            // 真实像素尺寸落位，逻辑坐标乘 kScale 换算。
+            const QPoint pinAt(70 * int(kScale), 110 * int(kScale));
+            // 菜单放到贴图右侧留白，不压住贴图内容（真实右键也是这个位置关系）。
+            const QPoint menuAt(pinAt.x() + pinShot.width() + 16 * int(kScale),
+                                pinAt.y() + 30 * int(kScale));
+            const int sceneHeight = std::max(460 * int(kScale),
+                                             std::max(pinAt.y() + pinShot.height(),
+                                                      menuAt.y() + menuShot.height()) + 24);
+            // 合成场景：代码画的"桌面" + 真实贴图窗口 + 真实右键菜单。
+            QImage scene(logical.width() * int(kScale), sceneHeight, QImage::Format_RGB32);
+            { QPainter p(&scene);
+              p.drawImage(QRect(0, 0, scene.width(), sceneHeight),
+                          desktop, QRect(0, 0, desktop.width(),
+                                         std::min(desktop.height(), sceneHeight)));
+              p.drawPixmap(pinAt, pinShot);
+              p.drawPixmap(menuAt, menuShot); }
+            QVERIFY(scene.save(folder + "/pin-window.png"));
+            menu.reset();
+            pin.close();
+        }
+
+        // ---- 图 3：衣架（卡片取自上面这张"桌面"的局部，像真实截图缩略图）----
+        {
+            QTemporaryDir temp;
+            std::vector<core::HistoryEntry> entries;
+            const QRect crops[] = {QRect(96, 74, 486, 356), QRect(618, 96, 286, 300),
+                                   QRect(120, 462, 250, 108), QRect(300, 120, 280, 200),
+                                   QRect(700, 140, 220, 240)};
+            int index = 0;
+            for (const QRect& crop : crops) {
+                const QImage thumb = desktop.copy(QRect(crop.topLeft() * kScale,
+                                                        crop.size() * kScale));
+                const QString path = temp.filePath(QString::number(index++) + ".png");
+                QVERIFY(thumb.save(path));
+                entries.push_back({path.toStdString(), "", thumb.width(), thumb.height()});
+            }
+            Clothesline line;
+            line.setEntries(entries);
+            line.setDarkTheme(false);
+            line.revealForTest(QRect(0, 0, logical.width(), logical.height()));
+            QTest::qWait(1200);
+            const int stripHeight = 190;
+            QImage canvas(logical.width() * int(kScale), stripHeight * int(kScale),
+                          QImage::Format_RGB32);
+            { QPainter p(&canvas);
+              p.drawImage(QRect(0, 0, canvas.width(), canvas.height()),
+                          desktop, QRect(0, 0, desktop.width(),
+                                         stripHeight * int(kScale))); }
+            { QPainter p(&canvas);
+              p.scale(kScale, kScale);      // 按逻辑坐标渲染控件，输出 2 倍像素
+              line.render(&p); }
+            QVERIFY(canvas.save(folder + "/clothesline.png"));
+            line.hideNow();
+        }
     }
 
 };
