@@ -1039,8 +1039,12 @@ void SelectionOverlay::paintSelectionChrome(QPainter& painter,
 #ifdef Q_OS_MACOS
     const QString text = QStringLiteral("%1 × %2  pt").arg(selection.width()).arg(selection.height());
 #else
-    const QSize size = selectionToPixelRegion(selection).size();
-    const QString text = QStringLiteral("%1 × %2  px").arg(size.width()).arg(size.height());
+    // 变量名不能叫 size：下方还有一块同名的作用域内局部变量。
+    // 这处重复声明只会在非 macOS 分支被编译，因此 macOS 上发现不了
+    // （Linux 的 GCC 直接报 redeclaration 编译失败）。
+    const QSize pixelSize = selectionToPixelRegion(selection).size();
+    const QString text =
+        QStringLiteral("%1 × %2  px").arg(pixelSize.width()).arg(pixelSize.height());
 #endif
     QFont font = smallFont();
     font.setPointSize(12);
