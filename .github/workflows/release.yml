@@ -138,9 +138,86 @@ jobs:
             dist/*.zip
             dist/*.dmg
 
+  windows:
+    name: Windows 构建与打包（zip）
+    runs-on: windows-2022
+    # 在 MSYS2 的 bash 里跑：工具链、Qt6、objdump、zip 都在同一前缀（/ucrt64）。
+    # 选 MinGW 而不是 MSVC，因为 Windows 平台后端此前就是用
+    # mingw-w64 + UCRT 交叉编译验证过的（见 scripts/verify-windows-cross.sh），
+    # 这里沿用同一套工具链，避免"验证过的代码换个编译器重新赌一次"。
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 MSYS2 与 Qt6 工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          # 不整体 update：镜像里的包库已足够新，跳过可省两三分钟。
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            zip
+
+      - name: 校验 tag 与项目版本一致
+        if: github.ref_type == 'tag'
+        run: |
+          PROJECT_VERSION="$(grep -m1 -E '^[[:space:]]+VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | awk '{print $2}')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "tag=${TAG_VERSION} 项目版本=${PROJECT_VERSION}"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "::error::tag（${TAG_VERSION}）与 CMakeLists.txt 的项目版本（${PROJECT_VERSION}）不一致，请先统一版本号再打 tag。"
+            exit 1
+          fi
+
+      - name: 配置与构建
+        run: |
+          # cygpath 把 /ucrt64 转成 Windows 路径：CMake 是原生程序，
+          # 直接给 POSIX 路径在部分 MSYS2 版本上会被当成相对路径。
+          cmake -S . -B build-windows -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(cygpath -m /ucrt64)"
+          cmake --build build-windows
+          ls -l build-windows/src/ui/jie2.exe build-windows/src/tools/jie2-probe.exe
+
+      - name: 运行测试
+        run: ctest --test-dir build-windows --output-on-failure
+
+      - name: 平台能力自检（运行级，本机 Win32 后端）
+        # 这是 Windows 后端第一次在真实 Windows 上跑（此前只有交叉编译）。
+        # 不阻断发布：runner 的桌面会话与真实机器不同，抓屏/枚举失败
+        # 属于环境差异，结论以日志为准，由发布说明如实记录。
+        continue-on-error: true
+        run: |
+          ./build-windows/src/tools/jie2-probe.exe
+          echo "== --displays =="
+          ./build-windows/src/tools/jie2-probe.exe --displays
+          echo "== --capture =="
+          ./build-windows/src/tools/jie2-probe.exe --capture
+          echo "== --windows =="
+          ./build-windows/src/tools/jie2-probe.exe --windows
+
+      - name: 自包含打包（zip）
+        run: |
+          bash scripts/package-windows.sh build-windows dist
+          ls -lh dist
+
+      - name: 上传 Windows 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          if-no-files-found: error
+          path: dist/*.zip
+
   release:
-    name: 创建 Release
-    needs: [linux, macos]
+    name: 创建或补全 Release
+    needs: [linux, macos, windows]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
@@ -155,13 +232,24 @@ jobs:
       - name: 列出待发布文件
         run: ls -lh artifacts
 
-      - name: 创建 Release 并附加安装包
+      - name: 创建 Release 或补全附件
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "截2 $GITHUB_REF_NAME" \
-            --generate-notes \
-            artifacts/*
+          # 幂等：同一个 tag 可能因为新增平台、重跑流水线而再次进入这里。
+          # 已有 Release 时只上传（覆盖同名）附件，**不覆盖**发布说明 ——
+          # 说明里写了安装方法与已验证范围，是人工维护的。
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME 已存在，补全附件"
+            gh release upload "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              artifacts/*
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "截2 $GITHUB_REF_NAME" \
+              --generate-notes \
+              artifacts/*
+          fi
