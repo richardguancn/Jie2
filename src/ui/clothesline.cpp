@@ -2,17 +2,23 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <QCache>
+
+#include "core/image_ops.h"
 
 #include <QApplication>
 #include <QClipboard>
 #include <QCursor>
 #include <QDebug>
 #include <QDrag>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMimeData>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -23,6 +29,7 @@
 #include <QUrl>
 
 #include "ui/flight_overlay.h"
+#include "platform/platform.h"
 
 namespace jie2::ui {
 
@@ -45,6 +52,25 @@ QGradientStops ropeFade(const QColor& color) {
     QColor transparent = color;
     transparent.setAlpha(0);
     return {{0.0, transparent}, {0.08, color}, {0.92, color}, {1.0, transparent}};
+}
+
+const QImage& cardShadow(const QSize& size, bool hovered) {
+    static QCache<QString, QImage> cache(64);
+    const QString key = QStringLiteral("%1x%2:%3").arg(size.width()).arg(size.height()).arg(hovered);
+    if (auto* existing = cache.object(key)) return *existing;
+    QImage mask(size + QSize(40, 40), QImage::Format_RGBA8888);
+    mask.fill(Qt::transparent);
+    { QPainter p(&mask); p.setRenderHint(QPainter::Antialiasing);
+      p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, hovered ? 66 : 46));
+      p.drawRoundedRect(QRectF(QPointF(20, 20), QSizeF(size)), 16, 16); }
+    core::ImageBuffer source(mask.width(), mask.height());
+    for (int y = 0; y < mask.height(); ++y) std::memcpy(source.scanline(y), mask.constScanLine(y), source.stride());
+    const auto blurred = core::boxBlur(source, {0, 0, mask.width(), mask.height()}, hovered ? 10 : 7);
+    auto* result = new QImage(blurred.data(), blurred.width(), blurred.height(),
+                              int(blurred.stride()), QImage::Format_RGBA8888);
+    *result = result->copy();
+    cache.insert(key, result);
+    return *result;
 }
 
 } // namespace
@@ -80,18 +106,39 @@ Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
     gustTimer_->setSingleShot(true);
     connect(gustTimer_, &QTimer::timeout, this, &Clothesline::gustTick);
 
+    holdTimer_ = new QTimer(this);
+    holdTimer_->setSingleShot(true);
+    holdTimer_->setInterval(450);
+    connect(holdTimer_, &QTimer::timeout, this, [this] {
+        if (!pressedOnCard_ || pressedIndex_ < 0 ||
+            pressedIndex_ >= static_cast<int>(entries_.size())) return;
+        const QString path = QString::fromStdString(entries_[pressedIndex_].entry.path);
+        pressedOnCard_ = false;
+        pressedIndex_ = -1;
+        update();
+        emit annotateRequested(path);
+    });
     conceal();  // 初始收起
 }
 
 void Clothesline::setDarkTheme(bool dark) {
     darkTheme_ = dark;
     if (dark) {
-        colors_ = StripColors{QColor(30, 30, 36, 150), QColor(40, 40, 46, 150),
+        colors_ = StripColors{QColor(234, 242, 250, 155), QColor(40, 40, 46, 150),
                               QColor(225, 225, 232), QColor(170, 170, 178)};
     } else {
-        colors_ = StripColors{QColor(245, 246, 251, 165), QColor(250, 250, 253, 165),
+        colors_ = StripColors{QColor(243, 248, 255, 185), QColor(250, 250, 253, 165),
                               QColor(52, 54, 62), QColor(96, 98, 108)};
     }
+    update();
+}
+
+void Clothesline::showCopied(const QString& path) {
+    if (indexOfPath(path) < 0) return;
+    copiedPath_ = path;
+    copiedUntilMs_ = frameClock_.elapsed() + 1600;
+    peekUntilMs_ = qMax(peekUntilMs_, copiedUntilMs_);
+    ensureFrameTimer();
     update();
 }
 
@@ -128,9 +175,14 @@ void Clothesline::setEntries(std::vector<core::HistoryEntry> entries) {
     }
     primed_ = true;
     entries_ = std::move(fresh);
+    if (!copiedPath_.isEmpty() && indexOfPath(copiedPath_) < 0) {
+        copiedPath_.clear();
+        copiedUntilMs_ = -1;
+    }
     // 容器被重建：所有基于旧索引的交互状态必须失效。
     // （若不清，hoverIndex_ 可能指向已不存在的项，paintEvent 会越界。）
     hoverIndex_ = -1;
+    holdTimer_->stop();
     pressedOnCard_ = false;
     pressedIndex_ = -1;
     // 防无界增长：只保留当前在线的路径。
@@ -254,21 +306,13 @@ int Clothesline::itemAt(const QPoint& pos) const {
         if (item.flying || item.falling) {
             continue;
         }
-        const QPointF anchor = cardAnchor(i);
-        // 逆旋转回正后再做矩形包含判定（卡片是斜挂着的）。
-        QTransform transform;
-        transform.translate(anchor.x(), anchor.y());
-        transform.rotate(item.tilt + item.swing.value);
-        transform.translate(-anchor.x(), -anchor.y());
-        if (cardRectF(i).contains(transform.inverted().map(QPointF(pos)))) {
-            return i;
-        }
+        if (cardRectF(i).contains(cardLocalPoint(i, pos))) return i;
     }
     return -1;
 }
 
 void Clothesline::tick() {
-    if (!watchEnabled_) {
+    if (!watchEnabled_ || menuOpen_ || pressedOnCard_ || draggingOut_) {
         return;
     }
 
@@ -277,49 +321,38 @@ void Clothesline::tick() {
     if (screen == nullptr) {
         return;
     }
-    const QRect area = screen->geometry();
+    updateRevealForPointer(pos, screen->geometry(), frameClock_.elapsed());
+}
 
-    // 展开条件：指针触到屏幕顶边（顶边热区）。
-    const bool atTopEdge = pos.y() <= area.top() + kEdgeZone &&
-                           pos.x() >= area.left() && pos.x() <= area.right();
-
+void Clothesline::updateRevealForPointer(const QPoint& pos, const QRect& area, qint64 now) {
+    if (menuOpen_ || pressedOnCard_ || draggingOut_) return;
+    const bool atTopEdge = area.contains(pos) && pos.y() <= area.top() + kEdgeZone;
     if (!revealed_) {
-        // 收起动画进行中不重新展开：否则指针停在顶边时，
-        // "滑出"与"滑入"会互相打架，表现为条带抖动。
-        // （!revealed_ 时在跑的滑动只可能是收起。）
-        if (slideMode_ != Slide::None) {
-            return;
-        }
-        if (atTopEdge) {
-            reveal(area);  // 按指针所在屏定位并做滑入动画
+        outsideSinceMs_ = -1;
+        if (slideMode_ != Slide::None) return;
+        if (!atTopEdge) { edgeSinceMs_ = -1; return; }
+        if (edgeSinceMs_ < 0) edgeSinceMs_ = now;
+        if (now - edgeSinceMs_ >= 250) {
+            edgeSinceMs_ = -1;
+            reveal(area);
         }
         return;
     }
-
-    // 已展开：指针离开"保持展开区"→ 收起。
-    //
-    // 注意不能用 stripGeometry.contains(pos) 做判定：在 macOS 上窗口会被
-    // 窗口服务器下移（菜单栏之下），而光标还在屏幕顶边（y=1~3），
-    // 落在窗口上方 → 会判定"离开"而收起，下个 tick 又展开（实测抖动）。
-    // 因此保持区的上边界取"屏幕顶边"而不是窗口自身，下边界取窗口实际下沿。
-    const QRect stripGlobal =
-        revealed_ ? frameGeometry() : geometry();
-    const QRect keepOpen(stripGlobal.left() - 8, area.top() - 8,
-                         stripGlobal.width() + 16,
-                         stripGlobal.bottom() - area.top() + 16);
-    // 探出亮相期间不自动收起（tendedero 的 peek 窗口期）。
-    if (peekUntilMs_ >= 0 && frameClock_.elapsed() < peekUntilMs_) {
+    // 保持区始终属于已展开的屏幕，不能随指针切换到另一块屏幕。
+    const QRect keepOpen(x() - 8, anchoredScreenArea_.top() - 8,
+                         width() + 16, y() + height() - anchoredScreenArea_.top() + 16);
+    if (keepOpen.contains(pos) || (peekUntilMs_ >= 0 && now < peekUntilMs_)) {
+        outsideSinceMs_ = -1;
         return;
     }
-    if (!keepOpen.contains(pos)) {
-        conceal();
-    }
+    if (outsideSinceMs_ < 0) outsideSinceMs_ = now;
+    if (now - outsideSinceMs_ >= 500) conceal();
 }
 
 QScreen* Clothesline::panelScreen() const {
     // 用当前所在屏幕；未定位时退回主屏。
     QScreen* screen =
-        QGuiApplication::screenAt(QPoint(x() + width() / 2, 1));
+        QGuiApplication::screenAt(anchoredScreenArea_.center());
     if (screen == nullptr) {
         screen = QGuiApplication::primaryScreen();
     }
@@ -354,23 +387,21 @@ void Clothesline::advanceFrame() {
     if (slideMode_ == Slide::Spring) {
         const double yv = slideSpring_.step(dt);
         if (slideSpring_.settled(0.5)) {
-            move(x(), slideTargetY_);
+            contentOffsetY_ = slideTargetY_;
             slideMode_ = Slide::None;
             if (slideHideAtEnd_) {
                 hide();
             }
         } else {
-            move(x(), qRound(yv));
+            contentOffsetY_ = yv;
             active = true;
         }
     } else if (slideMode_ == Slide::EaseIn) {
         slideElapsedMs_ += dtMs;
         const double t = std::min(1.0, slideElapsedMs_ / kSlideEaseInMs);
-        move(x(), qRound(slideFrom_ +
-                         (slideTargetY_ - slideFrom_) *
-                             core::swiftuiEaseIn(t)));
+        contentOffsetY_ = slideFrom_ + (slideTargetY_ - slideFrom_) * core::swiftuiEaseIn(t);
         if (t >= 1.0) {
-            move(x(), slideTargetY_);
+            contentOffsetY_ = slideTargetY_;
             slideMode_ = Slide::None;
             if (slideHideAtEnd_) {
                 hide();
@@ -380,12 +411,19 @@ void Clothesline::advanceFrame() {
         }
     }
 
+    update();  // 只重绘内容，动画期间绝不移动系统窗口
+
     // 卡片动效
     for (Item& item : entries_) {
         if (advanceItem(item, dt, dtMs)) {
             active = true;
             dirty = true;
         }
+    }
+    if (!copiedPath_.isEmpty()) {
+        if (now < copiedUntilMs_) active = true;
+        else { copiedPath_.clear(); copiedUntilMs_ = -1; }
+        dirty = true;
     }
     if (dirty) {
         update();
@@ -458,11 +496,11 @@ void Clothesline::startSlide(int targetY, bool hideAtEnd, bool springy) {
         // 带过冲回弹 —— tendedero 面板落下的"顿一下"感。
         slideMode_ = Slide::Spring;
         slideSpring_ =
-            core::Spring::fromResponse(0.42, 0.72, y(), targetY);
+            core::Spring::fromResponse(0.42, 0.72, contentOffsetY_, targetY);
     } else {
         // 收起：easeIn 0.22s，加速离场不拖沓。
         slideMode_ = Slide::EaseIn;
-        slideFrom_ = y();
+        slideFrom_ = contentOffsetY_;
         slideElapsedMs_ = 0;
     }
     ensureFrameTimer();
@@ -473,9 +511,18 @@ void Clothesline::reveal(const QRect& area) {
         return;
     }
     revealed_ = true;
-    // 起始位置在屏幕上方（不可见），弹簧滑入到 area.top()。
-    setGeometry(area.left(), area.top() - kPanelHeight, area.width(),
-                kPanelHeight);
+    anchoredScreenArea_ = area;
+    edgeSinceMs_ = outsideSinceMs_ = -1;
+    // macOS 会约束顶层窗口位置。窗口只定位一次；滑动只改变绘制偏移，
+    // 防止负坐标反复被系统修正而使衣架逐帧下坠。
+    int panelTop = area.top();
+#ifdef Q_OS_MACOS
+    if (QScreen* screen = QGuiApplication::screenAt(area.center())) {
+        panelTop = qMax(panelTop, screen->availableGeometry().top());
+    }
+#endif
+    contentOffsetY_ = -kPanelHeight;
+    setGeometry(area.left(), panelTop, area.width(), kPanelHeight);
     show();
     raise();
     // 等这次展开的卡片此刻起播挂载掉落（tendedero：卡片随面板落下）。
@@ -489,8 +536,9 @@ void Clothesline::reveal(const QRect& area) {
                 core::Spring::fromStiffness(46, 2.6, kArriveTilt, 0);
         }
     }
-    startSlide(area.top(), /*hideAtEnd=*/false, /*springy=*/true);
-    // 展开期间才有风（tendedero 的 breeze 只在可见时吹）。
+    startSlide(0, /*hideAtEnd=*/false, /*springy=*/true);
+    // 刚展开就有一阵风按卡片顺序扫过，之后再间歇轻推。
+    startRevealBreeze();
     gustTimer_->start(QRandomGenerator::global()->bounded(2200, 4600));
     qInfo().noquote() << QStringLiteral("[jie2] 衣架展开（%1 项）")
                              .arg(entries_.size());
@@ -506,6 +554,12 @@ void Clothesline::peek(const QRect& area) {
 }
 
 void Clothesline::conceal() {
+    ++revealEpoch_;
+    copiedPath_.clear();
+    copiedUntilMs_ = -1;
+    holdTimer_->stop();
+    pressedOnCard_ = false;
+    pressedIndex_ = -1;
     hoverIndex_ = -1;
     peekUntilMs_ = -1;
     gustTimer_->stop();
@@ -525,18 +579,27 @@ void Clothesline::conceal() {
         item.arriveSwing.value = 0;
     }
     // 滑出动画结束时才 hide()（否则动画看不见）。
-    startSlide(panelScreenArea().top() - kPanelHeight, /*hideAtEnd=*/true,
+    startSlide(-kPanelHeight, /*hideAtEnd=*/true,
                /*springy=*/false);
     qInfo().noquote() << QStringLiteral("[jie2] 衣架收起");
 }
 
 void Clothesline::hideNow() {
+    ++revealEpoch_;
+    copiedPath_.clear();
+    copiedUntilMs_ = -1;
+    holdTimer_->stop();
+    pressedOnCard_ = false;
+    pressedIndex_ = -1;
     // 用于"截图前立刻消失"：不等动画，直接隐藏。
     revealed_ = false;
     hoverIndex_ = -1;
     peekUntilMs_ = -1;
     gustTimer_->stop();
     slideMode_ = Slide::None;
+    contentOffsetY_ = -kPanelHeight;
+    edgeSinceMs_ = outsideSinceMs_ = -1;
+    frameTimer_->stop();
     hide();
     // 飞行/坠落中的覆盖层是全屏置顶窗口，也会被拍进截图。
     FlightOverlay::dismissAll();
@@ -587,7 +650,7 @@ void Clothesline::flyCapture(const QString& path, const QRect& globalRect) {
 
     // 坐标换算：面板展开到位后贴在屏幕顶边，面板本地坐标正好等于
     // 屏幕本地逻辑坐标（x 偏移同为 area.left()）。
-    const QRectF to = cardRectF(index);
+    const QRectF to = cardRectF(index).translated(x() - area.left(), y() - area.top());
     const QRectF from = QRectF(globalRect).translated(-area.topLeft());
 
     item.flying = true;
@@ -637,6 +700,19 @@ void Clothesline::nudge(int index, double degrees) {
     ensureFrameTimer();
 }
 
+void Clothesline::startRevealBreeze() {
+    const quint64 epoch = ++revealEpoch_;
+    const double direction = QRandomGenerator::global()->bounded(2) ? 1.0 : -1.0;
+    for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+        const QString path = QString::fromStdString(entries_[i].entry.path);
+        const double degrees = direction * (1.8 + (i % 3) * 0.35);
+        QTimer::singleShot(140 + i * 55, this, [this, epoch, path, degrees] {
+            if (!revealed_ || revealEpoch_ != epoch) return;
+            nudge(indexOfPath(path), degrees);
+        });
+    }
+}
+
 void Clothesline::gustTick() {
     if (!revealed_ || entries_.empty()) {
         return;
@@ -656,6 +732,7 @@ void Clothesline::takeDown(int index) {
         return;
     }
     Item& item = entries_[static_cast<std::size_t>(index)];
+    if (item.falling) return;
     const QString path = QString::fromStdString(item.entry.path);
     qInfo().noquote() << QStringLiteral("[jie2] 衣架：取下 %1").arg(path);
 
@@ -666,7 +743,7 @@ void Clothesline::takeDown(int index) {
         const QRect area = panelScreenArea();
         // 面板本地 → 屏幕本地：补上当前窗口偏移（滑动中途也正确）。
         QRectF card = cardRectF(index);
-        card.translate(x() - area.left(), y() - area.top());
+        card.translate(x() - area.left(), y() - area.top() + contentOffsetY_);
         FlightOverlay::fall(item.thumbnail, card,
                             item.tilt + item.swing.value, screen);
     }
@@ -755,30 +832,18 @@ void Clothesline::drawCardBody(QPainter& painter, int index) const {
                                        -kFrameInset, -kFrameInset);
     const bool hovered = (index == hoverIndex_);
 
-    // 投影（无模糊 API，用三层渐淡的偏移圆角矩形近似柔和阴影；
-    // 参数对齐 tendedero：黑 18%、半径 10、下移 5；悬停 26%/14/8）
-    const double shadowY = hovered ? 8.0 : 5.0;
-    const int shadowAlpha = hovered ? 66 : 46;
+    const QImage& shadow = cardShadow(card.size().toSize(), hovered);
+    painter.drawImage(card.topLeft() + QPointF(-20, hovered ? -12 : -15), shadow);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(0, 0, 0, shadowAlpha / 3));
-    painter.drawRoundedRect(card.adjusted(-4, -4, 4, 4).translated(0, shadowY + 2),
-                            kFrameRadius + 4, kFrameRadius + 4);
-    painter.setBrush(QColor(0, 0, 0, shadowAlpha / 2));
-    painter.drawRoundedRect(card.adjusted(-2, -2, 2, 2).translated(0, shadowY + 1),
-                            kFrameRadius + 2, kFrameRadius + 2);
-    painter.setBrush(QColor(0, 0, 0, shadowAlpha));
-    painter.drawRoundedRect(card.translated(0, shadowY), kFrameRadius,
-                            kFrameRadius);
-
     // 玻璃底（ultraThinMaterial 的近似：半透明主题色）
     painter.setBrush(colors_.cardGlass);
     painter.drawRoundedRect(card, kFrameRadius, kFrameRadius);
 
     // 玻璃描边：顶部受光的纵向渐变（白 55% → 白 12%）
     QLinearGradient specular(0, card.top(), 0, card.bottom());
-    specular.setColorAt(0.0, QColor(255, 255, 255, 140));
-    specular.setColorAt(1.0, QColor(255, 255, 255, 31));
-    painter.setPen(QPen(QBrush(specular), 0.75));
+    specular.setColorAt(0.0, QColor(255, 255, 255, 205));
+    specular.setColorAt(1.0, QColor(255, 255, 255, 95));
+    painter.setPen(QPen(QBrush(specular), 1.0));
     painter.setBrush(Qt::NoBrush);
     painter.drawRoundedRect(card, kFrameRadius, kFrameRadius);
     // 外侧细暗边（黑 10%）
@@ -803,6 +868,37 @@ void Clothesline::drawCardBody(QPainter& painter, int index) const {
         painter.setPen(colors_.failText);
         painter.drawText(photo, Qt::AlignCenter, QStringLiteral("读取失败"));
     }
+    if (hovered) {
+        const QRectF close = closeRect(index);
+        painter.setPen(QPen(QColor(255, 255, 255, 115), .7));
+        painter.setBrush(QColor(24, 27, 40, 190));
+        painter.drawEllipse(close);
+        painter.setPen(QPen(Qt::white, 1.2, Qt::SolidLine, Qt::RoundCap));
+        const QPointF c = close.center();
+        painter.drawLine(c + QPointF(-2.5, -2.5), c + QPointF(2.5, 2.5));
+        painter.drawLine(c + QPointF(2.5, -2.5), c + QPointF(-2.5, 2.5));
+    }
+
+    if (QString::fromStdString(item.entry.path) == copiedPath_ &&
+        copiedUntilMs_ > frameClock_.elapsed()) {
+        painter.save();
+        const qreal fade = std::min(1.0, (copiedUntilMs_ - frameClock_.elapsed()) / 220.0);
+        painter.setOpacity(painter.opacity() * fade);
+        QFont font; font.setPointSize(11); font.setWeight(QFont::DemiBold);
+        painter.setFont(font);
+        const QString text = QStringLiteral("已复制");
+        const qreal width = QFontMetricsF(font).horizontalAdvance(text) + 42;
+        const QRectF bubble(card.center().x() - width / 2, card.bottom() - 5, width, 27);
+        painter.setPen(QPen(QColor(255, 255, 255, 125), .75));
+        painter.setBrush(darkTheme_ ? QColor(174, 155, 199, 245) : QColor(224, 215, 237, 250));
+        painter.drawRoundedRect(bubble, 13.5, 13.5);
+        painter.setPen(QPen(QColor(39, 31, 49), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const QPointF check(bubble.left() + 13, bubble.center().y());
+        painter.drawPolyline(QPolygonF{check + QPointF(-3, 0), check + QPointF(0, 3), check + QPointF(6, -4)});
+        painter.drawText(bubble.adjusted(29, 0, -10, 0), Qt::AlignCenter, text);
+        painter.restore();
+    }
+
 }
 
 void Clothesline::drawEmptyHint(QPainter& painter) const {
@@ -827,6 +923,7 @@ void Clothesline::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.translate(0, contentOffsetY_);
 
     // 无底板：面板透明，只画绳子、衣夹与卡片（tendedero 形态）。
     drawRope(painter);
@@ -867,8 +964,6 @@ void Clothesline::paintEvent(QPaintEvent*) {
         }
         painter.setOpacity(opacity);
 
-        drawClothespin(painter, anchor);
-
         // 悬停放大 / 按压缩小以卡顶中心为锚（tendedero 的
         // scaleEffect(anchor: .top) 只作用于卡片，不含衣夹）。
         const bool pressed = pressedOnCard_ && pressedIndex_ == i;
@@ -882,26 +977,94 @@ void Clothesline::paintEvent(QPaintEvent*) {
         painter.translate(-cardTop);
         drawCardBody(painter, i);
         painter.restore();
-
+        // 衣夹位于照片之前，保留与照片重叠的完整长度。
+        drawClothespin(painter, anchor);
         painter.restore();
     }
+}
+
+QRectF Clothesline::closeRect(int index) const {
+    const QRectF card = cardRectF(index);
+    return QRectF(card.left() + 4, card.top() + 4, 20, 20);
+}
+
+QPointF Clothesline::cardLocalPoint(int index, const QPoint& pos) const {
+    const Item& item = entries_[index];
+    const QPointF anchor = cardAnchor(index);
+    QTransform transform;
+    transform.translate(anchor.x(), anchor.y() + contentOffsetY_);
+    transform.rotate(item.tilt + item.swing.value + (item.arriving ? item.arriveSwing.value : 0));
+    transform.translate(-anchor.x(), -anchor.y());
+    if (item.arriving) transform.translate(0, item.arriveOffset.value);
+    const QRectF card = cardRectF(index);
+    const QPointF top(card.center().x(), card.top());
+    transform.translate(top.x(), top.y());
+    const double scale = pressedOnCard_ && pressedIndex_ == index ? 0.95 : hoverIndex_ == index ? 1.035 : 1.0;
+    transform.scale(scale, scale);
+    transform.translate(-top.x(), -top.y());
+    return transform.inverted().map(QPointF(pos));
+}
+
+QMenu* Clothesline::createContextMenu(const QString& path) {
+    auto* menu = new QMenu(this);
+    auto add = [menu](const QString& label, auto callback) {
+        auto* action = menu->addAction(label);
+        QObject::connect(action, &QAction::triggered, menu, callback);
+    };
+    add(QStringLiteral("复制"), [this, path] { emit copyRequested(path); });
+    add(QStringLiteral("打开"), [this, path] { emit openRequested(path); });
+    add(QStringLiteral("标注"), [this, path] { emit annotateRequested(path); });
+#ifdef Q_OS_MACOS
+    add(QStringLiteral("在访达中显示"), [this, path] { emit revealRequested(path); });
+#else
+    add(QStringLiteral("在文件管理器中显示"), [this, path] { emit revealRequested(path); });
+#endif
+    add(QStringLiteral("保存到桌面"), [this, path] { emit saveDesktopRequested(path); });
+    menu->addSeparator();
+    const bool owned = !managedDirectory_.isEmpty() &&
+        QFileInfo(path).canonicalPath() == QFileInfo(managedDirectory_).canonicalFilePath();
+    add(owned ? QStringLiteral("丢弃") : QStringLiteral("从衣架取下（保留文件）"),
+        [this, path] { emit discardRequested(path); });
+    return menu;
 }
 
 void Clothesline::mousePressEvent(QMouseEvent* event) {
     const int index = itemAt(event->pos());
     if (event->button() == Qt::RightButton) {
         if (index >= 0) {
-            takeDown(index);  // 坠落取下（tendedero 的 Take down）
+            holdTimer_->stop();
+            pressedOnCard_ = false;
+            pressedIndex_ = -1;
+            const QString path = QString::fromStdString(entries_[index].entry.path);
+            auto* menu = createContextMenu(path);
+            menuOpen_ = true;
+#ifdef Q_OS_MACOS
+            if (QGuiApplication::platformName() == QStringLiteral("cocoa") && menu->toNSMenu()) {
+                const QPoint point = event->globalPosition().toPoint();
+                platform::popupMacContextMenu(menu->toNSMenu(), point.x(), point.y());
+            } else
+#endif
+            {
+                menu->exec(event->globalPosition().toPoint());
+            }
+            menuOpen_ = false;
+            menu->deleteLater();
         } else {
             conceal();
         }
         return;
     }
     if (event->button() == Qt::LeftButton && index >= 0) {
+        if (closeRect(index).contains(cardLocalPoint(index, event->pos())) && hoverIndex_ == index) {
+            const QString path = QString::fromStdString(entries_[index].entry.path);
+            emit discardRequested(path);
+            return;
+        }
         // 先记录：等 mouseMove 判断这是"点击"还是"拖出"。
         pressedOnCard_ = true;
         pressPos_ = event->pos();
         pressedIndex_ = index;
+        holdTimer_->start();
         update();  // 按压缩小 0.95（tendedero 的长按蓄力感）
         return;
     }
@@ -929,8 +1092,9 @@ bool Clothesline::startDragOut(int index) {
     auto* mime = new QMimeData();
     mime->setUrls({QUrl::fromLocalFile(path)});
     // 同时带图像数据：可拖进聊天窗口 / 图像编辑器等以图像接收的程序。
-    if (!thumbnail.isNull()) {
-        mime->setImageData(thumbnail);
+    const QImage fullImage(path);
+    if (!fullImage.isNull()) {
+        mime->setImageData(fullImage);
     }
 
     QDrag drag(this);
@@ -941,8 +1105,10 @@ bool Clothesline::startDragOut(int index) {
                                    Qt::SmoothTransformation));
     }
     qInfo().noquote() << QStringLiteral("[jie2] 衣架：拖出 %1").arg(path);
+    draggingOut_ = true;
     const Qt::DropAction action = drag.exec(Qt::CopyAction | Qt::MoveAction,
                                             Qt::CopyAction);
+    draggingOut_ = false;
 
     // 语义（对齐 tendedero）：
     //   - MoveAction：对方把文件拿走（移动）→ 卡片离开衣架；
@@ -972,6 +1138,7 @@ void Clothesline::mouseMoveEvent(QMouseEvent* event) {
     if (pressedOnCard_ &&
         (event->pos() - pressPos_).manhattanLength() >= kDragStartDistance) {
         const int index = pressedIndex_;
+        holdTimer_->stop();
         pressedOnCard_ = false;
         pressedIndex_ = -1;
         update();  // 撤销按压缩放
@@ -982,11 +1149,14 @@ void Clothesline::mouseMoveEvent(QMouseEvent* event) {
     const int index = itemAt(event->pos());
     if (index != hoverIndex_) {
         hoverIndex_ = index;
+        setCursor(index >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        setToolTip(index >= 0 ? QStringLiteral("单击复制 · 双击打开 · 长按标注 · 拖动分享 · 右键更多") : QString());
         update();
     }
 }
 
 void Clothesline::mouseReleaseEvent(QMouseEvent* event) {
+    holdTimer_->stop();
     if (event->button() != Qt::LeftButton) {
         return;
     }
@@ -1006,7 +1176,20 @@ void Clothesline::mouseReleaseEvent(QMouseEvent* event) {
         QString::fromStdString(entries_[static_cast<std::size_t>(index)].entry.path));
 }
 
+void Clothesline::mouseDoubleClickEvent(QMouseEvent* event) {
+    holdTimer_->stop();
+    pressedOnCard_ = false;
+    pressedIndex_ = -1;
+    const int index = itemAt(event->pos());
+    if (event->button() == Qt::LeftButton && index >= 0) {
+        const QString path = QString::fromStdString(entries_[index].entry.path);
+        emit openRequested(path);
+    }
+    update();
+}
+
 void Clothesline::leaveEvent(QEvent*) {
+    holdTimer_->stop();
     if (hoverIndex_ != -1) {
         hoverIndex_ = -1;
         update();

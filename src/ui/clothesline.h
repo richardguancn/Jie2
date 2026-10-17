@@ -13,6 +13,7 @@
 #include "core/spring.h"
 
 class QScreen;
+class QMenu;
 class QTimer;
 
 namespace jie2::ui {
@@ -31,7 +32,7 @@ namespace jie2::ui {
 ///     同时带 16° 的欠阻尼摆动衰减到静止（k=46, c=2.6），透明度渐入
 ///   - 截图飞入：截图从被截取的区域起飞，沿 30pt 弧线收缩成卡片落位
 ///     （FlightOverlay，0.65s easeInOutCubic），落地后卡片 0.16s 淡入接管
-///   - 风吹：面板展开期间，每隔 2.2–4.5s 随机挑一张卡片轻推一下
+///   - 风吹：展开时依次轻推卡片，之后每隔 2.2–4.5s 随机轻推一张
 ///     （0.3s easeOut 到摆角，再欠阻尼弹簧回稳）
 ///   - 自动探出：有新截图挂上时，面板自动展开亮相 2.5s 再收起
 ///   - 取下坠落：右键取下的卡片加速坠落（e = t³）、越转越歪、渐隐，
@@ -42,7 +43,8 @@ namespace jie2::ui {
 ///   - 单击卡片 → 复制图像到剪贴板
 ///   - 把卡片拖出去 → 交给目标程序（拖到文件管理器 = 保存文件；
 ///     接受 MoveAction 时该卡片从衣架取下）
-///   - 右键卡片 → 坠落取下（文件保留，只离开线）
+///   - 双击卡片 → 打开图像；长按 0.45 秒 → 标注图像
+///   - 右键卡片 → 操作菜单，支持取下（文件保留，只离开线）
 ///   - Esc → 收起
 ///
 /// 约束：本类是 UI 层组件，数据来自 core::CaptureHistory，
@@ -71,6 +73,7 @@ public:
     void hideNow();
 
     /// 供测试查询。
+    void takeDownPath(const QString& path) { takeDown(indexOfPath(path)); }
     int itemCount() const { return static_cast<int>(entries_.size()); }
     bool isRevealed() const { return revealed_; }
     /// 供离屏渲染测试驱动动效（生产路径走 tick 轮询触发）。
@@ -79,6 +82,9 @@ public:
 
     /// 主题（专业版对齐项 v2.6：主题色跟随系统主题）。
     void setDarkTheme(bool dark);
+    /// 在复制成功的卡片下方显示短暂反馈，按路径跟随历史刷新。
+    void showCopied(const QString& path);
+    void setManagedDirectory(const QString& path) { managedDirectory_ = path; }
 
 signals:
     /// 用户点击卡片，**请求**把该图复制到剪贴板。
@@ -91,16 +97,23 @@ signals:
     /// 用户右键取下（或拖出被移走）某张（托盘控制器据此更新历史）。
     /// 取下动画（0.55s 坠落 + 0.6s 布局保持）结束后才发出。
     void entryDropped(const QString& path);
+    void openRequested(const QString& path);
+    void annotateRequested(const QString& path);
+    void revealRequested(const QString& path);
+    void saveDesktopRequested(const QString& path);
+    void discardRequested(const QString& path);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
+    friend class UiAlignmentTest;
     /// 摆动状态（风吹 / 挂载掉落的旋转分量共用）。
     /// 两段式（tendedero）：先 0.3s easeOut 到目标摆角，
     /// 再欠阻尼弹簧回稳到 0。
@@ -130,7 +143,11 @@ private:
         SwingState swing;
     };
 
-    void tick();               // 轮询指针位置
+    void tick();
+    void updateRevealForPointer(const QPoint& pos, const QRect& area, qint64 now);
+    QMenu* createContextMenu(const QString& path);
+    QRectF closeRect(int index) const;
+    QPointF cardLocalPoint(int index, const QPoint& pos) const;
     /// 展开到指定屏幕区域（area 为屏幕几何，来自 tick 的指针所在屏）。
     void reveal(const QRect& area);
     /// 探出亮相：展开并在 kPeekMs 后自动收起（有新截图挂上时）。
@@ -172,6 +189,7 @@ private:
     void nudge(int index, double degrees);
     /// 风吹节拍：随机挑一张卡片轻推（tendedero 的 breeze）。
     void gustTick();
+    void startRevealBreeze();
     /// 坠落取下：面板内隐藏卡片，FlightOverlay 播坠落，0.6s 后
     /// 才真正移除并发 entryDropped（布局保持到坠落结束）。
     void takeDown(int index);
@@ -191,6 +209,9 @@ private:
     bool watchEnabled_ = false;
     int hoverIndex_ = -1;
     QTimer* pollTimer_ = nullptr;
+    QTimer* holdTimer_ = nullptr;
+    bool menuOpen_ = false;
+    bool draggingOut_ = false;
     /// 探出亮相的截止时刻（frameClock_ 时基）；在此之前不自动收起。
     qint64 peekUntilMs_ = -1;
     /// flyCapture 先于 setEntries 到达时暂存的请求。
@@ -207,12 +228,20 @@ private:
     Slide slideMode_ = Slide::None;
     core::Spring slideSpring_;   // Spring 模式用
     double slideFrom_ = 0;       // EaseIn 模式用
-    int slideTargetY_ = 0;
+    int slideTargetY_ = 0;  // 内容偏移，窗口本身固定
+    double contentOffsetY_ = -210;
+    QRect anchoredScreenArea_;
+    QString managedDirectory_;
+    qint64 edgeSinceMs_ = -1;
+    qint64 outsideSinceMs_ = -1;
     double slideElapsedMs_ = 0;  // EaseIn 模式用
     bool slideHideAtEnd_ = false;
 
     // ---- 风吹 ----
     QTimer* gustTimer_ = nullptr;
+    quint64 revealEpoch_ = 0;
+    QString copiedPath_;
+    qint64 copiedUntilMs_ = -1;
 
     // ---- 拖出状态 ----
     bool pressedOnCard_ = false;   // 左键按在卡片上（等待判定是点击还是拖拽）

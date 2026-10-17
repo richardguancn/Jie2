@@ -22,6 +22,14 @@
 
 namespace jie2::platform {
 
+void popupMacContextMenu(void* nativeMenu, int globalX, int globalY) {
+    NSMenu* menu = static_cast<NSMenu*>(nativeMenu);
+    if (!menu) return;
+    const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(globalX, top - globalY) inView:nil];
+}
+
+
 namespace {
 
 // 'JIe2' —— 用于区分本应用注册的热键事件。
@@ -169,15 +177,17 @@ public:
                       screenDescription().c_str());
         caps.sessionDetail = buffer;
 
-        // 屏幕录制权限：macOS 抓屏的前提。真实探测（不弹窗）。
+        // 这里只查询系统预检查，不发起授权。预检查的否定结果不能当作
+        // 用户未授权的证据：已观测到系统允许且实际抓屏成功时仍返回否定。
         const bool canCapture = CGPreflightScreenCaptureAccess();
         caps.screenCapture = {
             canCapture ? core::CapabilityStatus::Available
-                       : core::CapabilityStatus::Degraded,
+                       : core::CapabilityStatus::Unknown,
             canCapture
-                ? "CGDisplayCreateImageForRect / CGWindowList（已获屏幕录制权限）"
-                : "未授予屏幕录制权限：首次抓屏时系统会弹窗请求，"
-                  "需在 系统设置 → 隐私与安全性 → 屏幕录制 中允许"};
+                ? "系统预检查已确认录屏权限"
+                : "系统预检查尚未确认录屏权限，不代表未授权。"
+                  "若能正常截到其他应用，请以实际截图结果为准，无需重复授权；"
+                  "仅在截图失败时检查 系统设置 → 隐私与安全 → 录屏与系统录音"};
 
         caps.globalHotkey = {core::CapabilityStatus::Available,
                              "Carbon RegisterEventHotKey"};
@@ -187,10 +197,8 @@ public:
                            "macOS 无 layer-shell 概念，顶部条用 NSPanel 实现"};
         caps.clipboardImage = {core::CapabilityStatus::Available, "NSPasteboard"};
 
-        // 辅助功能权限：元素检测的前提。M0 先并入会话说明。
-        if (!AXIsProcessTrusted()) {
-            caps.sessionDetail += "；辅助功能权限未授予（M1 的元素/窗口吸附将不可用）";
-        }
+        // 当前窗口边界吸附通过 CGWindowListCopyWindowInfo 实现，
+        // 不把辅助功能授权状态误当作窗口吸附的前提。
         return caps;
     }
 
@@ -595,8 +603,8 @@ private:
             const bool trusted = CGPreflightScreenCaptureAccess();
             return CaptureResult::failure(
                 trusted ? "系统返回空图像（该显示器可能已休眠）"
-                        : "抓屏失败：未授予屏幕录制权限，请在 系统设置 → 隐私与安全性"
-                          " → 屏幕录制 中允许本应用后重试");
+                        : "系统未返回截图，录屏权限预检查也未确认。若已授权，"
+                          "请完全退出截2再打开后重试；不要仅凭此检查重复授权");
         }
         const size_t width = CGImageGetWidth(image);
         const size_t height = CGImageGetHeight(image);

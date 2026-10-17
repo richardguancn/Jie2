@@ -16,6 +16,7 @@
 #include "core/ocr.h"
 #include "core/shortcut_map.h"
 #include "platform/platform.h"
+#include "ui/selection_overlay.h"
 #include "ui/pin_window.h"  // PinWindow::DismissAction（Esc 行为配置）
 
 class QAction;
@@ -278,8 +279,10 @@ private:
 
     /// 保存 PNG 到截图目录并写入剪贴板（截图落点的公共实现）。
     /// writeClipboard=false 时只落盘不回写（Ctrl+Alt+C 保存剪贴板图像用）。
+    /// applyOutputOptions=false 用于衣架再标注：尺寸不变，另存新文件。
+    QString deliverSelection(const SelectionOverlay::Outcome& outcome, QString* error, bool applyOutputOptions = true);
     QString saveAndCopy(const QImage& image, QString* error,
-                        bool writeClipboard = true);
+                        bool writeClipboard = true, bool applyOutputOptions = true);
 
     /// Ctrl+Alt+C：把剪贴板中的图像保存为文件（专业版对齐项 v2.5）。
     void triggerSaveClipboardImage();

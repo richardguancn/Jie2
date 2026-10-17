@@ -78,5 +78,9 @@ public:
 /// 创建当前平台的实现。永不为空。
 /// 未知平台返回"能力全为 Unknown"的空实现，而不是崩溃或静默假装可用。
 std::unique_ptr<Platform> createPlatform();
+#if defined(__APPLE__)
+/// 在 Qt 全局逻辑坐标处显示原生 macOS 菜单；nativeMenu 为借用的 NSMenu。
+void popupMacContextMenu(void* nativeMenu, int globalX, int globalY);
+#endif
 
 } // namespace jie2::platform

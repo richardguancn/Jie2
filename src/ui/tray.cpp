@@ -14,10 +14,14 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDialog>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QUuid>
 #include <QMimeData>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -58,18 +62,17 @@ constexpr const char* kSaveClipboardHotkeyId = "save-clipboard-image";
 // （浏览器搜索、IDE 查找），改用 Ctrl+Alt+P：P = Pin。
 constexpr const char* kPinHotkeyId = "pin-clipboard";
 
-/// 代码绘制托盘图标。M0 不引入资源文件；正式图标与品牌资源在 M7 设计。
+/// 菜单栏只保留白色标志；其他平台使用完整的草绿应用图标。
 QIcon makeTrayIcon() {
-    QPixmap pixmap(64, 64);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    // 取景框 + 对角线，示意"截图"
-    painter.setPen(QPen(QColor(64, 158, 255), 6));
-    painter.drawRect(QRectF(10, 10, 44, 44));
-    painter.drawLine(QPointF(23, 41), QPointF(41, 23));
-    painter.end();
-    return QIcon(pixmap);
+#ifdef Q_OS_MACOS
+    QIcon icon;
+    icon.addFile(QStringLiteral(":/brand/menubar/white-22.png"), QSize(22, 22));
+    icon.addFile(QStringLiteral(":/brand/menubar/white-44.png"), QSize(44, 44));
+    icon.addFile(QStringLiteral(":/brand/menubar/white-66.png"), QSize(66, 66));
+    return icon;
+#else
+    return QIcon(QStringLiteral(":/brand/app/icon-256.png"));
+#endif
 }
 
 QString configFilePath() {
@@ -229,6 +232,7 @@ bool TrayController::start() {
         updateWaylandLine();
     } else if (clotheslineEnabled_) {
         clothesline_ = new Clothesline();
+        clothesline_->setManagedDirectory(captureDirectory());
         clothesline_->setDarkTheme(darkTheme_);  // 主题跟随系统（v2.6）
         // 复制动作由这里执行（而不是衣架窗口自己）—— 写入剪贴板会同步
         // 触发本控制器的剪贴板监听，而监听会重建衣架数据；把写入集中在
@@ -245,8 +249,73 @@ bool TrayController::start() {
                     qInfo().noquote()
                         << QStringLiteral("[jie2] 衣架：已复制 %1 到剪贴板")
                                .arg(path);
-                    note(QStringLiteral("已复制到剪贴板"),
-                         QFileInfo(path).fileName());
+                    clothesline_->showCopied(path);
+                });
+        connect(clothesline_, &Clothesline::revealRequested, this, [this](const QString& path) {
+#ifdef Q_OS_MACOS
+            if (!QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), path}))
+                note(QStringLiteral("打开访达失败"), path, true);
+#else
+            if (!QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath())))
+                note(QStringLiteral("打开文件夹失败"), path, true);
+#endif
+        });
+        connect(clothesline_, &Clothesline::saveDesktopRequested, this, [this](const QString& path) {
+            const QString desktop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+            if (desktop.isEmpty()) { note(QStringLiteral("保存失败"), QStringLiteral("未找到桌面目录"), true); return; }
+            const QFileInfo source(path);
+            QString target = QDir(desktop).filePath(source.fileName());
+            for (int i = 1; QFileInfo::exists(target); ++i)
+                target = QDir(desktop).filePath(QStringLiteral("%1 (%2).%3").arg(source.completeBaseName()).arg(i).arg(source.suffix()));
+            if (!QFile::copy(path, target)) {
+                note(QStringLiteral("保存到桌面失败"), target, true);
+                return;
+            }
+            clothesline_->takeDownPath(path);
+            note(QStringLiteral("已保存到桌面"), target);
+        });
+        connect(clothesline_, &Clothesline::discardRequested, this, [this](const QString& path) {
+            const bool owned = QFileInfo(path).canonicalPath() == QFileInfo(captureDirectory()).canonicalFilePath();
+            // 自有截图进入废纸篓；外部图片只从衣架取下。
+            if (owned && QFileInfo::exists(path) && !QFile::moveToTrash(path)) {
+                note(QStringLiteral("无法移到废纸篓"), path, true);
+                return;
+            }
+            clothesline_->takeDownPath(path);
+        });
+        connect(clothesline_, &Clothesline::openRequested, this,
+                [this](const QString& path) {
+                    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+                        note(QStringLiteral("打开失败"), QFileInfo(path).fileName(), true);
+                    }
+                });
+        connect(clothesline_, &Clothesline::annotateRequested, this,
+                [this](const QString& path) {
+                    const QImage image(path);
+                    if (image.isNull()) {
+                        note(QStringLiteral("读取失败"), QFileInfo(path).fileName(), true);
+                        return;
+                    }
+                    captureInProgress_ = true;
+                    clothesline_->setWatchEnabled(false);
+                    clothesline_->hideNow();
+                    SelectionOverlay::Options options;
+                    options.selectImage = true;
+                    options.darkTheme = darkTheme_;
+                    options.shortcuts = shortcutMap_;
+                    options.paletteSize = paletteSize_;
+                    options.eraserUndoable = eraserUndoable_;
+                    const auto result = SelectionOverlay::run(QPixmap::fromImage(image), 1.0,
+                        QGuiApplication::screenAt(QCursor::pos()), options);
+                    if (result.accepted && !result.outputImage.isNull()) {
+                        QString error;
+                        // 标注结果另存，取消或完成都保留原图。
+                        if (deliverSelection(result, &error, false).isEmpty()) {
+                            note(QStringLiteral("保存失败"), error, true);
+                        }
+                    }
+                    captureInProgress_ = false;
+                    clothesline_->setWatchEnabled(clotheslineEnabled_);
                 });
         connect(clothesline_, &Clothesline::entryDropped, this,
                 [this](const QString& path) {
@@ -269,12 +338,16 @@ bool TrayController::start() {
     rebuildMenu();
     tray_->setContextMenu(menu_);
 
+    // macOS 的左键菜单由 setContextMenu 交给系统显示；不要在激活时
+    // 再弹诊断对话框，否则每次打开菜单都会被“平台能力”打断。
+#ifndef Q_OS_MACOS
     connect(tray_, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
                 if (reason == QSystemTrayIcon::Trigger) {
-                    showCapabilities();
+                    menu_->popup(QCursor::pos());
                 }
             });
+#endif
     tray_->show();
 
     registerHotkey();
@@ -435,8 +508,40 @@ void TrayController::rebuildMenu() {
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
 }
 
+QString TrayController::deliverSelection(const SelectionOverlay::Outcome& outcome, QString* error,
+                                         bool applyOutputOptions) {
+    using Action = SelectionOverlay::Action;
+    if (outcome.action == Action::Finish)
+        return saveAndCopy(outcome.outputImage, error, true, applyOutputOptions);
+    pendingFlyRect_ = {};
+    QImage image = applyOutputOptions ? decorateForOutput(outcome.outputImage) : outcome.outputImage;
+    image.setColorSpace(QColorSpace::SRgb);
+    if (outcome.action == Action::SaveFile) {
+        QString path = QFileDialog::getSaveFileName(nullptr, QStringLiteral("保存截图"),
+            QDir(captureDirectory()).filePath(captureFileName()), QStringLiteral("PNG 图像 (*.png);;JPEG 图像 (*.jpg)"));
+        if (path.isEmpty()) return {};
+        if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".png");
+        if (!image.save(path)) {
+            if (error) *error = QStringLiteral("保存失败：%1").arg(path);
+            return {};
+        }
+        writeClipboardImage(image);
+        recordCapture(path, image);
+        ++captureCount_;
+        lastCapturePath_ = path;
+        saveConfig();
+        return path;
+    }
+    writeClipboardImage(image);
+    if (outcome.action == Action::Pin) {
+        triggerPin();
+        return QStringLiteral("(pin)");
+    }
+    return QStringLiteral("(clipboard)");
+}
+
 QString TrayController::saveAndCopy(const QImage& image, QString* error,
-                                    bool writeClipboard) {
+                                    bool writeClipboard, bool applyOutputOptions) {
     const auto setError = [error](const QString& text) {
         if (error != nullptr) {
             *error = text;
@@ -450,12 +555,12 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error,
 
     // 输出装饰（M1）：边框 / 阴影 / 圆角按设置应用。
     // 放在保存前统一处理，使文件与剪贴板拿到同一份成品。
-    QImage output = decorateForOutput(image);
+    QImage output = applyOutputOptions ? decorateForOutput(image) : image;
     // --size W H（M6）：强制输出尺寸（在装饰之后，得到的就是最终尺寸）。
     // --keep-aspect-ratio（专业版对齐项 v2.8.6）：改"拉伸填满"为
     // "等比缩放到 W×H 内" —— 输出可能小于指定尺寸（取决于源比例），
     // 这与 Snipaste 的语义一致（保比例优先于精确尺寸）。
-    if (overrides_.hasSize && overrides_.sizeWidth > 0 &&
+    if (applyOutputOptions && overrides_.hasSize && overrides_.sizeWidth > 0 &&
         overrides_.sizeHeight > 0 &&
         (output.width() != overrides_.sizeWidth ||
          output.height() != overrides_.sizeHeight)) {
@@ -480,7 +585,7 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error,
     }
 
     // --no-save（M6）：只写剪贴板，不落盘、不进历史。
-    if (overrides_.noSave) {
+    if (applyOutputOptions && overrides_.noSave) {
         qInfo().noquote() << QStringLiteral("[jie2] --no-save：仅写入剪贴板");
         ++captureCount_;
         saveConfig();
@@ -489,7 +594,7 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error,
 
     // 输出路径：命令行显式指定优先（M6），否则按时间自动命名。
     QString path;
-    if (!overrides_.outputPath.isEmpty()) {
+    if (applyOutputOptions && !overrides_.outputPath.isEmpty()) {
         path = overrides_.outputPath;
         const QFileInfo info(path);
         if (!info.absoluteDir().exists() &&
@@ -510,7 +615,9 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error,
         if (!QDir().mkpath(directory)) {
             return setError(QStringLiteral("无法创建截图目录：%1").arg(directory));
         }
-        path = directory + QLatin1Char('/') + captureFileName();
+        path = directory + QLatin1Char('/') +
+            (applyOutputOptions ? captureFileName() :
+             QStringLiteral("edited-%1.png").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
         if (!output.save(path, "PNG")) {
             return setError(QStringLiteral("保存 PNG 失败：%1").arg(path));
         }
@@ -764,7 +871,7 @@ QString TrayController::captureWithSelection(QString* error) {
     // 转全局逻辑坐标，recordCapture 据此让卡片从被截取的区域飞上衣架。
     pendingFlyRect_ = outcome.selection;
     pendingFlyRect_.translate(screen->geometry().topLeft());
-    const QString path = saveAndCopy(outcome.outputImage, error);
+    const QString path = deliverSelection(outcome, error);
     if (path.isEmpty()) {
         pendingFlyRect_ = QRect();  // 保存失败：清掉，避免污染下一张截图
     }
@@ -820,7 +927,7 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
     // 同 captureWithSelection：白板选区也从被截取区域飞上衣架。
     pendingFlyRect_ = outcome.selection;
     pendingFlyRect_.translate(geometry.topLeft());
-    const QString path = saveAndCopy(outcome.outputImage, error);
+    const QString path = deliverSelection(outcome, error);
     if (path.isEmpty()) {
         pendingFlyRect_ = QRect();
     }
@@ -846,6 +953,11 @@ void TrayController::triggerCapture() {
         return;
     }
     // 计数、历史与配置更新统一在 saveAndCopy 里完成（所有保存路径的公共出口）。
+    if (path == QStringLiteral("(pin)")) { rebuildMenu(); return; }
+    if (path == QStringLiteral("(clipboard)")) {
+        note(QStringLiteral("已复制到剪贴板"), QStringLiteral("截图已复制"));
+        rebuildMenu(); return;
+    }
     qInfo().noquote() << QStringLiteral("[jie2] 截图已保存：%1").arg(path);
     note(QStringLiteral("截图已保存"),
          QStringLiteral("%1\n（也已复制到剪贴板）").arg(path));
@@ -1258,7 +1370,7 @@ void TrayController::triggerPin() {
     pin->raise();
     note(QStringLiteral("已贴图"),
          QStringLiteral("滚轮缩放 · 1/2 旋转 · 3/4 翻转 · Ctrl+滚轮透明度 "
-                        "· 6 反色 · 双击关闭"));
+                        "· 6 反色 · 双击查看局部 · Esc 关闭"));
     rebuildMenu();
 }
 

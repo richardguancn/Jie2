@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QMessageBox>
 #include <QPainter>
 #include <QProcess>
@@ -725,6 +726,7 @@ int main(int argc, char** argv) {
 
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("jie2"));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/brand/app/icon-256.png")));
     QApplication::setApplicationDisplayName(QStringLiteral("截2"));
     QApplication::setApplicationVersion(QStringLiteral(JIE2_VERSION));
     // 托盘常驻应用：关闭最后一个窗口不等于退出。
