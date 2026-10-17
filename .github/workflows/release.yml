@@ -1,0 +1,167 @@
+# 「截2」发布流水线
+#
+# 触发：
+#   - 推送形如 0.0.1 或 v0.0.1 的 tag —— 构建各平台产物并创建 Release；
+#   - 手动触发（workflow_dispatch）—— 只构建与上传流水线产物，不创建 Release，
+#     用于在不打 tag 的情况下验证流水线本身。
+#
+# 版本号的唯一来源是 CMakeLists.txt 的 project(... VERSION ...)。
+# 每次构建都校验它与 tag 一致：不一致就直接失败，避免产出名不符实的安装包。
+#
+# 本仓库的默认工作流权限是只读，因此创建 Release 的作业显式声明 contents: write。
+
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub 的过滤模式是 glob（`+` 是字面量，不是"一次或多次"），
+      # 所以这里用字符类 + `*`：0.0.1、0.0.10、v1.2.3 都能命中。
+      - "[0-9]*.[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  linux:
+    name: Linux 构建与打包（deb / rpm / AppImage）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config python3 \
+            qt6-base-dev qt6-qpa-plugins \
+            libgl1-mesa-dev libx11-dev libxrandr-dev libxkbcommon-dev \
+            libdbus-1-dev zlib1g-dev \
+            libwayland-dev wayland-protocols \
+            rpm xvfb
+          # 关键依赖是否到位：缺失时 CMake 会静默降级（少 jie2-line、
+          # 少 Wayland 热键），所以这里把结论打印出来便于对照。
+          pkg-config --modversion wayland-client wayland-protocols dbus-1
+          wayland-scanner --version
+
+      - name: 校验 tag 与项目版本一致
+        if: github.ref_type == 'tag'
+        run: |
+          PROJECT_VERSION="$(grep -m1 -E '^[[:space:]]+VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | awk '{print $2}')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "tag=${TAG_VERSION} 项目版本=${PROJECT_VERSION}"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "::error::tag（${TAG_VERSION}）与 CMakeLists.txt 的项目版本（${PROJECT_VERSION}）不一致，请先统一版本号再打 tag。"
+            exit 1
+          fi
+
+      - name: 配置与构建
+        run: |
+          cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux -j"$(nproc)"
+          # 构建摘要：确认 Wayland 顶部条与门户后端确实编进来了。
+          ls -l build-linux/src/ui/jie2 build-linux/src/tools/jie2-probe
+          ls -l build-linux/src/tools/jie2-line || echo "（本次构建无 jie2-line）"
+
+      - name: 运行测试
+        run: ctest --test-dir build-linux --output-on-failure
+
+      - name: 打包 deb / rpm / AppImage
+        run: |
+          bash scripts/build-deb.sh build-linux dist
+          bash scripts/build-rpm.sh build-linux dist
+          bash scripts/build-appimage.sh build-linux dist
+          ls -lh dist
+
+      - name: 上传 linux 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          if-no-files-found: error
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  macos:
+    name: macOS 构建与打包（zip / dmg）
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Qt6
+        run: |
+          # qtbase 是 qt 拆分后的主模块；没有该 formula 时退回完整 qt。
+          brew install qtbase || brew install qt
+          brew list --versions qtbase || brew list --versions qt
+          command -v cmake || brew install cmake
+
+      - name: 校验 tag 与项目版本一致
+        if: github.ref_type == 'tag'
+        run: |
+          PROJECT_VERSION="$(grep -m1 -E '^[[:space:]]+VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | awk '{print $2}')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "tag=${TAG_VERSION} 项目版本=${PROJECT_VERSION}"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "::error::tag（${TAG_VERSION}）与 CMakeLists.txt 的项目版本（${PROJECT_VERSION}）不一致，请先统一版本号再打 tag。"
+            exit 1
+          fi
+
+      - name: 配置与构建
+        run: |
+          QT_PREFIX="$(brew --prefix qtbase 2>/dev/null || brew --prefix qt)"
+          echo "Qt 前缀：$QT_PREFIX"
+          cmake -S . -B build-macos -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX"
+          cmake --build build-macos -j"$(sysctl -n hw.ncpu)"
+
+      - name: 运行测试
+        run: ctest --test-dir build-macos --output-on-failure
+
+      - name: 自包含打包（zip + dmg）
+        run: |
+          export MACDEPLOYQT="$(brew --prefix qtbase 2>/dev/null || brew --prefix qt)/bin/macdeployqt"
+          bash scripts/package-macos.sh build-macos dist
+          ls -lh dist
+
+      - name: 上传 macOS 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.dmg
+
+  release:
+    name: 创建 Release
+    needs: [linux, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: 取回各平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出待发布文件
+        run: ls -lh artifacts
+
+      - name: 创建 Release 并附加安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "截2 $GITHUB_REF_NAME" \
+            --generate-notes \
+            artifacts/*
