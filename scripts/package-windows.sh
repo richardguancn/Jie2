@@ -72,6 +72,25 @@ echo "==> 1/5 收集 Qt 依赖进包（windeployqt）"
 # jie2 只用 PNG（brand.qrc 里没有 svg），因此不额外需要 qsvg。
 "$WINDEPLOYQT" --release "$PKG/jie2.exe"
 
+# MinGW 运行时**不会**被 windeployqt 收进来（实测：Qt6 的 windeployqt 只处理
+# MSVC 的 --compiler-runtime，对 MinGW 编译的程序不作处理），而 jie2.exe 的
+# 导入表里明确依赖 libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll。
+# 不补这三件，包在没有装 MSYS2 的机器上直接起不来 —— 由下面的导入表核对兜住。
+for lib in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+    src="$(gcc -print-file-name="$lib" 2>/dev/null || true)"
+    if [ -n "$src" ] && [ -f "$src" ] && [ "$src" != "$lib" ]; then
+        cp "$src" "$PKG/"
+    else
+        echo "错误：找不到 MinGW 运行时 $lib（gcc -print-file-name 返回：${src:-空}）" >&2
+        exit 1
+    fi
+done
+echo "  已补入 MinGW 运行时（libgcc / libstdc++ / libwinpthread）"
+
+# 本机 Qt6 的 translations 目录若为空（MSYS2 的 qt6 不打 catalogs.json），
+# windeployqt 会留下一个空目录并告警。空目录留着会让人误以为缺东西，删掉。
+rmdir "$PKG/translations" 2>/dev/null || true
+
 echo "==> 2/5 校验：必需的 Qt 模块与插件是否都在包内"
 REQUIRED=(
     "Qt6Core.dll"
