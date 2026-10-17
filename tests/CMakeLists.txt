@@ -16,3 +16,24 @@ else()
 endif()
 
 add_test(NAME core_tests COMMAND jie2_core_tests)
+
+# Qt 可用时验证真实控件的布局、手势与标注结果；无桌面时也可离屏运行。
+if(TARGET Qt6::Widgets)
+    find_package(Qt6 QUIET COMPONENTS Test)
+    if(TARGET Qt6::Test)
+        add_executable(jie2_ui_alignment_tests
+            ui_alignment_tests.cpp
+            ../src/ui/selection_overlay.cpp
+            ../src/ui/annotation_render.cpp
+            ../src/ui/clothesline.cpp
+            ../src/ui/flight_overlay.cpp
+            ../src/ui/pin_window.cpp
+        )
+        target_include_directories(jie2_ui_alignment_tests PRIVATE ../src)
+        target_link_libraries(jie2_ui_alignment_tests PRIVATE
+            jie2_core jie2_platform Qt6::Widgets Qt6::Test)
+        add_test(NAME ui_alignment_tests COMMAND jie2_ui_alignment_tests)
+        set_tests_properties(ui_alignment_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
+endif()
