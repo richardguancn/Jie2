@@ -256,7 +256,7 @@ void PinWindow::rebuild() {
     const int height = std::max(1, static_cast<int>(std::lround(
                                        base.height() / dpr * effectiveScale)));
 
-    resize(width, height);
+    resize(detailMode_ ? kDetailSide : width, detailMode_ ? kDetailSide : height);
     setWindowOpacity(std::clamp(opacityPercent_ / 100.0, 0.05, 1.0));
     update();
 }
@@ -266,6 +266,7 @@ void PinWindow::applyScaleFactor(double factor) {
     if (std::abs(next - scale_) < 1e-6) {
         return;
     }
+    if (detailMode_) detailScale_ *= next / scale_;
     scale_ = next;
     rebuild();
     qInfo().noquote() << QStringLiteral("[jie2] 贴图缩放 %1%")
@@ -287,16 +288,60 @@ void PinWindow::resetTo100() {
     scale_ = 1.0;
     opacityPercent_ = 100.0;
     thumbnail_ = false;
+    detailMode_ = false;
     rebuild();
     qInfo().noquote() << QStringLiteral("[jie2] 贴图重置为 100%");
 }
 
 void PinWindow::toggleThumbnail() {
+    if (detailMode_) toggleDetailAt(rect().center());
     thumbnail_ = !thumbnail_;
     rebuild();
     qInfo().noquote() << QStringLiteral("[jie2] 贴图%1")
                              .arg(thumbnail_ ? QStringLiteral("缩略图模式")
                                              : QStringLiteral("恢复原尺寸"));
+}
+
+QRectF PinWindow::detailSourceRect() const {
+    const double side = (kDetailSide - 4) / detailScale_;
+    return QRectF(detailCenter_.x() - side / 2, detailCenter_.y() - side / 2, side, side);
+}
+
+QPointF PinWindow::sourcePointAt(const QPoint& localPos) const {
+    if (detailMode_) {
+        const QRectF region = detailSourceRect();
+        return region.topLeft() + QPointF((localPos.x() - 2) / detailScale_,
+                                          (localPos.y() - 2) / detailScale_);
+    }
+    const QSize size = transformed().size();
+    return QPointF(localPos.x() * double(size.width()) / qMax(1, width()),
+                   localPos.y() * double(size.height()) / qMax(1, height()));
+}
+
+void PinWindow::toggleDetailAt(const QPoint& localPos) {
+    const QPoint globalPoint = mapToGlobal(localPos);
+    const QImage base = transformed();
+    if (base.isNull()) return;
+    const QPointF clicked = sourcePointAt(localPos);
+    dragging_ = false;
+    if (!detailMode_) {
+        detailCenter_ = clicked;
+        detailScale_ = double(width()) / base.width();
+        detailRestoreThumbnail_ = thumbnail_;
+        detailMode_ = true;
+        rebuild();
+        move(globalPoint - QPoint(kDetailSide / 2, kDetailSide / 2));
+        qInfo() << "[jie2] 贴图方形局部" << detailCenter_;
+    } else {
+        detailMode_ = false;
+        thumbnail_ = detailRestoreThumbnail_;
+        rebuild();
+        // 恢复后，刚才双击的图像位置仍位于鼠标下方。
+        const QPoint restored(qRound(clicked.x() * width() / base.width()),
+                              qRound(clicked.y() * height() / base.height()));
+        move(globalPoint - restored);
+        qInfo() << "[jie2] 贴图恢复完整图片";
+    }
 }
 
 void PinWindow::setInverted(bool on) {
@@ -305,21 +350,39 @@ void PinWindow::setInverted(bool on) {
 }
 
 void PinWindow::rotateClockwise() {
+    if (detailMode_) {
+        const QSize before = transformed().size();
+        detailCenter_ = QPointF(before.height() - detailCenter_.y(), detailCenter_.x());
+    }
     rotation_ = (rotation_ + 90) % 360;
     rebuild();
 }
 
 void PinWindow::rotateCounterClockwise() {
+    if (detailMode_) {
+        const QSize before = transformed().size();
+        detailCenter_ = QPointF(detailCenter_.y(), before.width() - detailCenter_.x());
+    }
     rotation_ = (rotation_ + 270) % 360;
     rebuild();
 }
 
 void PinWindow::flipHorizontal() {
+    if (detailMode_) {
+        const QSize before = transformed().size();
+        if (rotation_ % 180 == 0) detailCenter_.setX(before.width() - detailCenter_.x());
+        else detailCenter_.setY(before.height() - detailCenter_.y());
+    }
     flipH_ = !flipH_;
     rebuild();
 }
 
 void PinWindow::flipVertical() {
+    if (detailMode_) {
+        const QSize before = transformed().size();
+        if (rotation_ % 180 == 0) detailCenter_.setY(before.height() - detailCenter_.y());
+        else detailCenter_.setX(before.width() - detailCenter_.x());
+    }
     flipV_ = !flipV_;
     rebuild();
 }
@@ -378,6 +441,22 @@ void PinWindow::paintEvent(QPaintEvent*) {
         return;
     }
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    if (detailMode_) {
+        painter.fillRect(rect(), QColor(20, 20, 22));
+        painter.drawImage(QRectF(2, 2, width() - 4, height() - 4), base, detailSourceRect());
+        // 四色边缘明确标识局部查看，图片本身和导出内容不变。
+        const double side = kDetailSide, half = side / 2, edge = 1.5;
+        const QColor blue(49, 147, 231), yellow(212, 171, 0), green(122, 156, 37), red(177, 59, 32);
+        painter.fillRect(QRectF(0, 0, half, edge), blue);
+        painter.fillRect(QRectF(0, 0, edge, half), blue);
+        painter.fillRect(QRectF(half, 0, half, edge), yellow);
+        painter.fillRect(QRectF(side - edge, 0, edge, half), yellow);
+        painter.fillRect(QRectF(side - edge, half, edge, half), green);
+        painter.fillRect(QRectF(half, side - edge, half, edge), green);
+        painter.fillRect(QRectF(0, half, edge, half), red);
+        painter.fillRect(QRectF(0, side - edge, half, edge), red);
+        return;
+    }
     painter.drawImage(rect(), base);
     // 细边框：让贴图在浅色背景上也看得出边界（Snipaste 的贴图有阴影，
     // 我们 M4 先用 1px 边框，阴影留待后续迭代）。
@@ -441,10 +520,14 @@ void PinWindow::mouseDoubleClickEvent(QMouseEvent* event) {
         return;
     }
     // 修饰键+双击 = 缩略图模式（修饰键可配置，专业版 v2.11）；
-    // 裸双击 = 关闭（对齐 Snipaste）。
+    // 裸双击 = 以点击点为中心查看方形局部。
     if (thumbnailModifier_ != Qt::NoModifier &&
         event->modifiers().testFlag(thumbnailModifier_)) {
         toggleThumbnail();
+        return;
+    }
+    if (event->modifiers() == Qt::NoModifier) {
+        toggleDetailAt(event->pos());
         return;
     }
     qInfo().noquote() << QStringLiteral("[jie2] 贴图关闭（双击）");

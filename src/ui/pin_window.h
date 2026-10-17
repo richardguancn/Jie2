@@ -18,7 +18,8 @@ namespace jie2::ui {
 ///   - 中键单击：重置为 100% 大小与 100% 不透明
 ///   - `Shift+双击`：缩略图模式（缩小到固定上限，保留原始尺寸信息）
 ///   - 鼠标穿透：由托盘热键触发（切换光标下贴图的穿透状态）
-///   - `Esc` / 左键双击：关闭
+///   - 裸双击：以点击位置为中心切换方形局部；再次双击恢复
+///   - `Esc`：关闭
 ///   - 拖动：按住左键拖动窗口
 ///
 /// 坐标与缩放：内部保存原图 + 变换标志 + 缩放因子，在需要时重算显示图。
@@ -115,11 +116,15 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
+    friend class UiAlignmentTest;
     /// 按 原图 + 变换 + 缩放 重算显示图与窗口大小，并重绘。
     void rebuild();
     /// 当前显示图（含旋转/翻转/反色，不含缩放）。
     QImage transformed() const;
     void applyScaleFactor(double factor);
+    void toggleDetailAt(const QPoint& localPos);
+    QRectF detailSourceRect() const;
+    QPointF sourcePointAt(const QPoint& localPos) const;
     void applyOpacityDelta(double delta);
 
     QImage source_;          // 原图（不变）
@@ -129,6 +134,11 @@ private:
     bool flipV_ = false;
     bool inverted_ = false;
     bool thumbnail_ = false;
+    bool detailMode_ = false;
+    bool detailRestoreThumbnail_ = false;
+    QPointF detailCenter_;
+    double detailScale_ = 1.0;  // 当前一个原图像素占多少逻辑点
+    static constexpr int kDetailSide = 54;
     bool selected_ = false;  // 选中态（Ctrl+A 全选后拖动联动）
     DismissAction escAction_ = DismissAction::Close;         // Esc 默认关闭
     DismissAction shiftEscAction_ = DismissAction::Hide;     // Shift+Esc 默认隐藏
