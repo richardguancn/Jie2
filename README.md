@@ -1,11 +1,65 @@
-# 截图（J2）
+# 截2（Jie2）
 
-跨平台截图 / 标注 / 贴图工具。对标 Snipaste 2.x 专业版全功能，并在 Linux aarch64 上可用。
+跨平台截图 / 标注 / 贴图工具。对标 Snipaste 2.x 专业版全功能，
+当前发布 **0.0.2**，提供 macOS（arm64）、Linux（x86_64）与 Windows（x64）安装包。
 
-> 当前状态：**M0–M7 主要功能全部落地**（截图 / 标注 / 衣架 / 贴图 / OCR / 命令行 / 打包），
-> 1.8 节专业版对齐清单已全部闭环。
-> 功能规划与选型依据见 [《截2-可行性评估报告.md》](截2-可行性评估报告.md)。
-> 剩余仅两项环境性余项（Windows 实机验证 / ScreenCast 扩展点，见文末）。
+[**下载 0.0.2**](https://github.com/richardguancn/Jie2/releases/tag/0.0.2) ·
+[功能完成度](#功能完成度总览收口) ·
+[验证状态](#验证状态) ·
+[已知缺陷与踩坑记录](#已修掉的真实缺陷累计)
+
+| | 状态 |
+|---|---|
+| 平台 | macOS 14+ / Windows 10+ / Linux（X11 与 Wayland） |
+| 安装包 | dmg + zip、zip（免安装）、deb + rpm + AppImage |
+| 界面技术 | Qt 6 Widgets（全自绘），UI 层可整体替换为 QML |
+| 内核 | 纯 C++20，不依赖 Qt 与任何系统 API，可脱离 GUI 单测 |
+| 依赖 | macOS / Windows 包自包含 Qt；Linux 包用发行版自带 Qt6 |
+
+## 界面
+
+选中区域后按需标注，工具条按功能分组（形状 / 箭头 / 画笔 / 荧光笔 / 图像效果 /
+文字 / 橡皮擦，撤销重做，末尾是取消、贴图、保存、复制）：
+
+![选区与标注](docs/images/selection-overlay.png)
+
+确认后的输出就是所选区域加标注，所见即所得：
+
+<img src="docs/images/annotated-result.png" alt="标注结果" width="620">
+
+截图挂上衣架：指针停到屏幕顶边展开，卡片可直接复制、双击打开、长按标注：
+
+![衣架](docs/images/clothesline.png)
+
+贴图把截好的图钉在屏幕最上层，右键菜单提供图像处理、另存、分组与尺寸：
+
+![贴图窗口](docs/images/pin-window.png)
+
+托盘菜单（各平台走系统原生菜单）：
+
+<img src="docs/images/tray-menu.png" alt="托盘菜单" width="320">
+
+应用图标与菜单栏标志：
+
+<img src="docs/images/icon-preview.png" alt="图标" width="520">
+
+> 上图是用**真实控件离屏渲染**生成的（`tests/ui_alignment_tests.cpp` 的
+> `readmeFigures` 用例，设 `JIE2_UI_ARTIFACTS` 即导出），背景是代码画的
+> 示意桌面，不含任何真实屏幕内容。
+
+## 安装
+
+**macOS（arm64）** 下载 dmg，把 `jie2.app` 拖进「应用程序」。当前为 ad-hoc 签名、
+未做 Apple 公证，首次打开请右键 →「打开」。
+
+**Windows（x64）** 下载 zip 解压到任意目录，双击 `jie2.exe`。常驻托盘、不出主窗口；
+不写注册表、不装服务，删除文件夹即卸载。
+
+**Debian / Ubuntu / 麒麟 / 统信** `sudo apt install ./jie2_0.0.2_amd64.deb`
+**Fedora / RHEL / openEuler** `sudo dnf install ./jie2-0.0.2-1.x86_64.rpm`
+**其他 x86_64 Linux** `chmod +x jie2-0.0.2-x86_64.AppImage && ./jie2-0.0.2-x86_64.AppImage`
+
+默认热键：截图 `Ctrl+Alt+T`、贴图 `Ctrl+Alt+P`、保存剪贴板图像 `Ctrl+Alt+C`。
 
 ## 架构：三层解耦
 
@@ -31,6 +85,9 @@
 
 ```
 CMakeLists.txt              顶层工程（Qt 可选：无 Qt 时只构建下两层）
+.github/workflows/release.yml  推送版本 tag 即构建三平台安装包并发布
+assets/brand/               应用图标与菜单栏标志（SVG 原稿 + 各尺寸 PNG + icns + qrc）
+docs/                       各轮的改动 / 验证记录，docs/images 是 README 配图
 src/core/                   图像内核（零 UI 依赖）
   geometry.h                Point / Size / Rect
   image_buffer.{h,cpp}      RGBA/BGRA 像素缓冲
@@ -53,13 +110,25 @@ src/ui/                     UI 层（唯一允许使用 Qt 的地方）
   selection_overlay.{h,cpp} 截图选择遮罩（框选/吸附/放大镜/回放/12 键标注工具条）
   annotation_render.{h,cpp} 标注渲染（矢量 QPainter + 像素效果合成）
   clothesline.{h,cpp}       衣架（M3，tendedero 合并）
-  pin_window.{h,cpp}        贴图窗口（M4：置顶/旋转/翻转/缩放/透明度/穿透/反色）
-  ocr_runner.{h,cpp}        OCR 执行器（M5：tesseract/自定义命令/OpenAI 兼容端点）
+  flight_overlay.{h,cpp}    截图飞入衣架的飞行覆盖层
+  pin_window.{h,cpp}        贴图窗口（M4：置顶/旋转/翻转/缩放/透明度/穿透/反色/局部）
+  ocr_runner.{h,cpp}        OCR 执行器（M5：系统/tesseract/自定义命令/OpenAI 兼容端点）
+  single_instance.{h,cpp}   单实例命令通道（QLocalSocket）
+  theme.{h,cpp}             主题解析（配置 > 环境变量探针 > 系统探测）
 src/tools/                  CLI 工具（不链接 Qt）
   probe_main.cpp            jie2-probe：平台能力/抓屏/窗口枚举，CI 与现场诊断
-tests/core_tests.cpp        内核单元测试（几何/缓冲/配置/能力/吸附/标注）
+  jie2_line.cpp             Wayland layer-shell 顶部条（独立进程渲染衣架）
+tests/
+  core_tests.cpp            内核单元测试（几何/缓冲/配置/能力/吸附/标注）
+  ui_alignment_tests.cpp    界面测试（工具条布局/手势/标注合成/衣架/贴图/菜单）
 scripts/
+  package-macos.sh          macOS 自包含打包（zip + dmg）
+  package-windows.sh        Windows 自包含打包（zip，含 MinGW 运行时）
+  build-deb.sh              构建 deb
+  build-rpm.sh              构建 rpm
+  build-appimage.sh         构建自解压 AppImage
   verify-linux-aarch64.sh   Linux ARM64 构建+验证（容器）
+  verify-windows-cross.sh   Windows 后端交叉编译验证（双工具链 + 导入表）
   test-interactive-linux.sh 交互链路 E2E（选择→绘制→撤销→重做→保存）
   test-snap-linux.sh        窗口吸附 E2E
   test-clothesline-linux.sh 衣架 E2E（展开/复制/收起）
@@ -68,38 +137,92 @@ scripts/
   mouse_tool.m              macOS 合成鼠标/键盘（交互验证用）
 ```
 
+版本号唯一来源是 `CMakeLists.txt` 的 `project(... VERSION ...)`：
+四个打包脚本都从这一行解析版本，发布流水线还会校验 tag 与它一致，
+不一致直接失败 —— 避免产出名不符实的安装包。
+
 ## 构建
 
 ### macOS
 
 ```bash
-brew install qt cmake
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j
+brew install qtbase cmake          # qtbase 是 qt 拆分后的主模块，省掉 webengine 等大包
+cmake -S . -B build-macos -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
+cmake --build build-macos -j
 ```
 
 ### Linux（含 aarch64）
 
 ```bash
-sudo apt install build-essential cmake qt6-base-dev libx11-dev
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j$(nproc)
+sudo apt install build-essential cmake qt6-base-dev qt6-qpa-plugins \
+    libgl1-mesa-dev libx11-dev libxrandr-dev libxkbcommon-dev \
+    libdbus-1-dev zlib1g-dev libwayland-dev wayland-protocols
+cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux -j$(nproc)
+```
+
+缺少 `wayland-client` / `wayland-scanner` 时自动跳过 `jie2-line`（Wayland 顶部条），
+缺少 `libdbus-1` / `zlib` 时自动关闭 Wayland 门户能力 —— 都会在 CMake 配置输出里
+说明原因，不会静默假装可用。
+
+### Windows（x64，MSYS2 / MinGW-w64）
+
+在 MSYS2 的 UCRT64 shell 中：
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-qt6-base \
+          mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-cmake \
+          mingw-w64-ucrt-x86_64-ninja zip unzip
+cmake -S . -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="$(cygpath -m /ucrt64)"
+cmake --build build-windows
 ```
 
 Qt6 缺失时仍可构建 `core` / `platform` / `tools` / `tests`（UI 层自动跳过）。
 
+## 打包与发布
+
+```bash
+bash scripts/package-macos.sh   build-macos   dist   # → jie2-<版本>-macos-<架构>.zip / .dmg
+bash scripts/package-windows.sh build-windows dist   # → jie2-<版本>-windows-x64.zip
+bash scripts/build-deb.sh       build-linux   dist
+bash scripts/build-rpm.sh       build-linux   dist
+bash scripts/build-appimage.sh  build-linux   dist
+```
+
+推一个与项目版本一致的 tag 即触发 GitHub Actions：
+
+```bash
+# 改版本号（CMakeLists.txt 的 VERSION）→ 提交 → 打 tag
+git tag -a 0.0.2 -m "截2 0.0.2" && git push origin 0.0.2
+```
+
+流水线（`.github/workflows/release.yml`）分别在 ubuntu-24.04、macos-14、
+windows-2022 上构建并跑 `ctest`，再打包、汇总到 Releases。
+`workflow_dispatch` 手动触发时只构建不发布，可用来先验流水线。
+同一个 tag 重跑时只补全附件，不覆盖人工维护的发布说明。
+
 ## 验证
 
 ```bash
-# 单元测试（任何环境）
-cd build && ctest --output-on-failure
+# 单元测试 + 界面测试（界面测试走离屏，无需桌面）
+ctest --test-dir build-macos --output-on-failure
 
 # 平台能力探测（无 GUI 依赖）
-./build/src/tools/jie2-probe
+./build-macos/src/tools/jie2-probe
 
 # 全局热键注册实测（Linux 下建议在 Xvfb 或有 X 会话中运行）
-./build/src/tools/jie2-probe --test-hotkey
+./build-macos/src/tools/jie2-probe --test-hotkey
+
+# 导出界面测试里的截图与 README 配图
+JIE2_UI_ARTIFACTS=/tmp/jie2-ui ctest --test-dir build-macos -R ui_alignment
 ```
+
+`ui_alignment_tests` 覆盖：工具条在 1280×800 / 480×320 / 320×480 下不出界且按钮可命中、
+选区八手柄缩放与整体拖动、保存/复制/贴图三个动作互不串台、标注与撤销重做、
+保留原图分辨率、衣架单击/双击/长按语义与菜单项、贴图右键菜单与局部模式，
+以及用真实控件离屏渲染 README 配图。
 
 `--test-hotkey` 会做两次注册：首次注册同一组合，若系统层面真的生效，
 第二次会被拒绝（macOS 返回 `eventHotKeyExistsErr`），这是"注册成功"的独立佐证。
@@ -132,12 +255,15 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | 置顶窗 | NSWindow level | EWMH | 合成器相关 |
 | 顶部条 | NSPanel | 置顶窗 | layer-shell（GNOME 不支持） |
 
-## 验证状态（M0 + M1 实测）
+## 验证状态
 
-| 项目 | macOS arm64 | Linux aarch64 |
+下表是逐项实测记录：每一行都对应一个可复现的验证脚本或测试用例，
+"✅" 表示亲眼看过输出（像素断言 / 日志 / 产物），不是"代码写了"。
+
+| 项目 | macOS arm64 | Linux（aarch64 / x86_64） |
 |---|---|---|
-| 全量构建（core/platform/ui/tools/tests） | ✅ | ✅ |
-| 内核单元测试 | ✅ | ✅ |
+| 全量构建（core/platform/ui/tools/tests） | ✅ 本机 + macos-14 CI | ✅ 容器 + ubuntu-24.04 CI |
+| 内核单元测试 / 界面测试 | ✅ 均通过 | ✅ 均通过 |
 | 平台探测 | ✅ 真实读取系统版本 / 屏幕数 / 屏幕录制权限 | ✅ X11 / Wayland / 无会话 三态均正确 |
 | 全局热键注册 | ✅ Carbon（二次注册被系统以 `eventHotKeyExistsErr` 拒绝，作为独立佐证） | ✅ XGrabKey（Xvfb 虚拟 X11 下实测） |
 | GUI 启动冒烟 | ✅ | ✅（Xvfb） |
@@ -184,7 +310,20 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | **缩略图快捷键自定义**（v2.11） | — | ✅ **E2E**：默认 Shift+双击缩略图；配 ctrl 后 Ctrl 有效、Shift 回落关闭 |
 | **layer-shell 顶部条**（Wayland 衣架） | —（macOS 无此概念） | ✅ **五项全过**（Sway 真实合成器）：自动切换 / items 文件 / 无孤儿 / 输出像素（缩略图色值精确）/ 层叠语义（盖住普通窗口） |
 | **贴图分组管理窗口** | — | ✅ `--show-group-manager` 可重复打开（Esc 关闭后主实例存活） |
-| **Windows 后端** | — | ✅ **双工具链**交叉编译（brew GCC 16.2.0/UCRT + Debian GCC 12-posix/msvcrt）+ 导入表检查；运行级验证待 Windows 实机 |
+| **Windows 后端** | — | ✅ **已在真实 Windows 运行**（windows-2022 runner）：能力探测报告抓屏/热键/置顶均可用，显示器枚举 1 块 1024×768，`--capture` 抓到 1024×768 BGRA 且四角与中心为真实桌面颜色，`--windows` 枚举到 3 个可吸附窗口；此前另有双工具链交叉编译 + 导入表检查 |
+| **界面测试**（`ui_alignment_tests`） | ✅ 工具条三分辨率布局 / 选区手柄 / 三动作互不串台 / 标注撤销重做 / 衣架手势 / 贴图菜单与局部 | ✅ 同上（ubuntu-24.04、windows-2022 CI 与 Debian aarch64 容器均通过） |
+| **发布流水线**（tag → 三平台安装包） | ✅ macOS arm64 zip/dmg | ✅ Linux x86_64 deb/rpm/AppImage；Windows x64 zip（CI 实跑，导入表核对 17 个非系统 DLL 全部随包） |
+
+Windows x64 单独列（结果来自 windows-2022 runner 上的实跑日志）：
+
+| 项目 | 结果 |
+|---|---|
+| 构建与测试 | ✅ 从零构建通过；`core_tests`、`ui_alignment_tests` 均通过 |
+| 平台能力探测 | ✅ 抓屏 / 全局热键 / 置顶窗 / 剪贴板均报告 `available`，`has-limitations: false` |
+| 显示器枚举 | ✅ 1 块，`1024x768+0+0 scale=1.00 (primary)` |
+| 抓屏 | ✅ `capture: ok 1024x768 bgra`，四角与中心采样为真实桌面颜色 |
+| 窗口枚举（吸附用） | ✅ `windows: 3` |
+| 打包完整性与依赖 | ✅ `unzip -t` 无错；导入表核对 17 个非系统 DLL 全部在包内 |
 
 抓屏验证细节：
 
@@ -447,16 +586,20 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
     （源图含 5 种行滤波轮转）/ 区域裁剪 / 越界失败 / 用户取消失败），
     **5 轮连续稳定通过**
 - **M7 打包（三平台完成）**——
-  - **Linux deb**（`scripts/build-deb.sh`）：`dpkg -i` 安装后 `/usr/bin/jie2`
-    与 `jie2-probe` 可用（容器内全链路验证）
+  - **Linux deb / rpm**（`scripts/build-deb.sh`、`build-rpm.sh`）：`dpkg -i` /
+    `dnf install` 后 `/usr/bin/jie2`、`jie2-probe`、`jie2-line` 可用
   - **Linux AppImage 风格单文件**（`scripts/build-appimage.sh`）：免 root、免安装，
     AppRun 预检宿主 Qt 库缺失时给出各发行版安装命令
-  - **macOS zip**（`scripts/build-macos.sh`）：默认轻量包；`--bundle-qt` 产出
-    **自包含包**（12MB）—— 复制 Qt 框架依赖闭包 + 平台插件 + qt.conf + ad-hoc 重签名。
-    已验证：dyld 全部从包内加载 Qt、GUI 正常运行、双热键注册成功
-  - 三者共用 `packaging/make-icon.sh` 生成图标（与程序内托盘图标同源几何）
+  - **macOS zip + dmg**（`scripts/package-macos.sh`）：在副本上 `macdeployqt` 收齐
+    Qt 框架与插件、注入图标、由内向外 ad-hoc 重签名，产出 zip 与拖拽安装用的 dmg；
+    打包后校验「主程序不再引用 /opt/homebrew」与 dmg 的 CRC32
+  - **Windows zip**（`scripts/package-windows.sh`）：`windeployqt` 收齐 Qt 与插件，
+    另补 MinGW 运行时（`libgcc_s_seh-1` / `libstdc++-6` / `libwinpthread-1`
+    —— Qt6 的 windeployqt 只处理 MSVC 的 `--compiler-runtime`，不会替你收这几件）；
+    打包后核对导入表：非系统 DLL 必须全部在包内，否则直接失败
+  - 全部共用 `packaging/make-icon.sh` 取图标（与程序内托盘图标同源）
   - Linux 依赖策略：**用发行版自带 Qt**，不捆绑运行时 —— 评估报告 3.1 对
-    麒麟/统信等老系统的兼容性要求
+    麒麟/统信等老系统的兼容性要求；macOS 与 Windows 则为自包含包
 
 ### 功能完成度总览（收口）
 
@@ -467,11 +610,14 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 
 按报告 1.8 的验收要求（"每一条都要有对应实现或明确的'不做/替代方案'
 结论"），全部条目的逐条结论见下方「1.8 清单收口附录」。**实现类条目
-全部带自动化验证**；仍未落地的只有两类：平台绑定项（Windows 实机）与
-经评估明确排除/延后的增强项（附录中各注明了理由与等效路径）。
+全部带自动化验证**；仍未落地的只有两类：需要真人操作的完整交互链路
+（Windows / Linux 桌面）与经评估明确排除/延后的增强项（附录中各注明了
+理由与等效路径）。
 
-- **Windows 实机验证**：代码与跨平台交叉编译验证已完成；运行级验证需
-  真实 Windows 环境（见下节 C）。
+- **Windows**：平台层已在真实 Windows 上跑通（CI 的 windows-2022 runner
+  实跑 `jie2-probe`：抓屏、显示器枚举、窗口枚举均正常，构建与 `ctest` 通过）；
+  **完整人机交互链路**（选区遮罩、标注、贴图、托盘菜单）尚未在真实 Windows
+  桌面上逐项走一遍。
 - **M6 增补**：ScreenCast 流式抓屏 —— 经评估不做：一次性截图由
   xdg-desktop-portal Screenshot 门户覆盖；ScreenCast 是持久流方案，
   留作将来录屏类需求的扩展点。
@@ -504,7 +650,7 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
 | 自定义命令（含超长命令显示） | **未做（列后续）**：现有扩展点 = OCR 自定义命令行后端 + `--output` 脚本化 |
 | Windows 10 原生分享按钮 | **平台绑定**：Windows 专属；Linux/macOS 不适用 |
 | 高级设置三项（hide_output_options 等） | **不适用/等效**：无输出选项面板；冻结遮罩模型无区域框动画；不写 PNG 软件元数据 |
-| Windows 实机验证 | **环境限制**：交叉编译验证已过；运行级验证需真实 Windows 环境 |
+| Windows 实机验证 | **平台层已完成**：在 windows-2022 runner 上实跑 `jie2-probe`，抓屏/显示器/窗口枚举均正常，构建与测试通过；完整人机交互链路待逐项走查 |
 
 ### 原「三个大项」的最终状态（全部完成）
 
@@ -535,8 +681,8 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
     透明区透出下层白板底色。
   - 适用范围如实：wlroots/KDE 支持；GNOME 对该协议无解（协议层面）。
 
-- **C. Windows 平台支持** ✅ **实现完成 + 双工具链交叉编译验证通过**
-  （实机运行验证待真实 Windows 环境，如实标注）。
+- **C. Windows 平台支持** ✅ **实现完成 + 已在真实 Windows 上运行验证**
+  （完整人机交互链路待在真实桌面上逐项走查）。
   - `src/platform/windows/windows_platform.cpp`（555 行）覆盖同一 Platform 接口：
     GDI BitBlt 抓屏（虚拟桌面坐标、含负坐标多屏）、EnumDisplayMonitors 显示器枚举
     （每屏 DPI）、RegisterHotKey 全局热键（专用消息线程 —— 与 X11 后端同一约定，
@@ -550,11 +696,19 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
     不支持 std::mutex/thread —— 直接编译 Windows 后端会失败（实测报
     "std::mutex does not name a type"）。验证脚本现在自动挑选 **posix 变体**，
     选不到时明确报错（附安装命令），不假装通过。
-  - **运行级验证的环境限制（如实）**：容器是 aarch64，其 wine 也是 aarch64 版，
-    只能加载 aarch64 PE；加载 x86-64 PE 会得到误导性的 "File not found"
-    （实测——看起来像产物坏了，实为架构不匹配）。aarch64 宿主上跑 x86-64 PE
-    需要 x86-64 wine / FEX / box64，本环境不具备。
-    **实机 Windows 验证仍待真实 Windows 环境**。
+  - **本地容器的运行级限制（如实）**：本地验证容器是 aarch64，其 wine 也是
+    aarch64 版，只能加载 aarch64 PE；加载 x86-64 PE 会得到误导性的
+    "File not found"（实测 —— 看起来像产物坏了，实为架构不匹配）。
+  - **真实 Windows 上的运行证据**（GitHub Actions 的 windows-2022 runner，
+    MSYS2 UCRT64 + MinGW + Qt6）：从零构建通过、`ctest` 两项全过，
+    `jie2-probe` 的输出为
+    `session: Windows (Windows)`、
+    `screen-capture: available`、
+    `displays: 1 → 1024x768+0+0 scale=1.00`、
+    `capture: ok 1024x768 bgra`（四角与中心采样均为真实桌面颜色，非全黑）、
+    `windows: 3`（可吸附窗口）。打包脚本随后核对导入表，17 个非系统依赖
+    （Qt6 四个模块 + qwindows 平台插件 + 图像格式/样式/TLS/网络信息插件 +
+    MinGW 运行时三件）全部在包内。
 
 ### 已修掉的真实缺陷（累计）
 
@@ -672,7 +826,37 @@ docker run --rm -v "$PWD":/work -w /work ubuntu:24.04 \
     复现；本轮补的 F5 自动化测试即为其暴露路径 —— 没有测试的功能哪怕
     "早就实现过"，也可能从未真正工作过。
 
-### 已知待办：截图色彩管理（如实记录）
+23. **平台 `#ifdef` 分支里的重复声明，只有 Linux 编译能发现**（`selection_overlay.cpp`）：
+    尺寸标签在非 macOS 分支声明了一个 `QSize size`，与下方的标签矩形变量同名，
+    属同作用域重复声明。该分支被 `#ifdef Q_OS_MACOS` 排除在 macOS 编译之外，
+    clang 根本看不到；首次发布流水线跑到 Ubuntu 才被 GCC 报
+    `redeclaration of 'const QSize size'` 拦下。
+    **教训：改动跨平台 `#ifdef` 分支后，必须在另一平台至少编译一次**（本地容器或 CI），
+    否则"本机通过"不构成证据。
+24. **windeployqt 不替 MinGW 收运行时**（`package-windows.sh`）：Qt6 的 `windeployqt`
+    只处理 MSVC 的 `--compiler-runtime`，不会为 MinGW 编译的程序复制
+    `libgcc_s_seh-1.dll` / `libstdc++-6.dll` / `libwinpthread-1.dll`。
+    包在没有装 MSYS2 的机器上会直接起不来。修复：按「编译器所在 bin 目录 →
+    `gcc -print-file-name` → PATH 逐目录」三层定位后补入；漏了会被打包脚本
+    的导入表核对拦下（那次正是它抓到的）。
+25. **`gcc -print-file-name` 找不到同目录的 DLL**：它只在库搜索目录里找，
+    对装在 `<前缀>/bin` 下的运行时 DLL 直接返回裸文件名。想当然地
+    `cp "$(gcc -print-file-name=libgcc_s_seh-1.dll)"` 会失败 —— 实测在 MSYS2 上撞到。
+
+### 已知待办（如实记录）
+
+- **截图色彩管理**：jie2 产出的 PNG 与系统 `screencapture` 的**数值**不同（最大通道差 26），
+  但把系统图按其嵌入的 Display P3 profile 转成 sRGB 后，两者**最大差降到 1**。
+  即：像素语义已是 sRGB（数值正确、能还原屏幕观感），仅差**未嵌入 sRGB
+  profile 标记** —— 严格遵循色彩管理的程序会按 sRGB 解释无标记文件，影响有限；
+  为对齐专业工具行为，应保存时嵌入显示器 ICC profile（或提供色彩空间选项）。
+- **Windows 完整交互链路**：平台层已在真实 Windows 上跑通（见验证状态表），
+  但选区遮罩、标注、贴图、托盘菜单这一整套还没在真实 Windows 桌面上逐项操作过。
+- **Windows 包形态**：目前是 zip 解压即用，没有安装器，exe 也没有设置图标
+  （系统显示默认图标）；托盘图标沿用 macOS 菜单栏的白色素材，浅色任务栏下
+  对比度可能不足（未实机目视核对）。
+- **Intel Mac 未出包**：CI 的 macOS runner 与本地构建都是 arm64。
+- **macOS 未公证**：只有 ad-hoc 签名，首次打开需右键「打开」。
 
 实测发现：jie2 产出的 PNG 与系统 `screencapture` 的**数值**不同（最大通道差 26），
 但把系统图按其嵌入的 Display P3 profile 转成 sRGB 后，两者**最大差降到 1**。
