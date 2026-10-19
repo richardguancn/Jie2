@@ -85,6 +85,40 @@ std::string portalTriggerString(const HotkeySpec& spec) {
         case Key::F10: out += "f10"; break;
         case Key::F11: out += "f11"; break;
         case Key::F12: out += "f12"; break;
+        case Key::Space: out += "space"; break;
+        case Key::Tab: out += "Tab"; break;
+        case Key::Return: out += "Return"; break;
+        case Key::Escape: out += "Escape"; break;
+        case Key::Backspace: out += "BackSpace"; break;
+        case Key::Delete: out += "Delete"; break;
+        case Key::Insert: out += "Insert"; break;
+        case Key::Home: out += "Home"; break;
+        case Key::End: out += "End"; break;
+        case Key::Left: out += "Left"; break;
+        case Key::Right: out += "Right"; break;
+        case Key::Up: out += "Up"; break;
+        case Key::Down: out += "Down"; break;
+        case Key::PageUp: out += "Page_Up"; break;
+        case Key::PageDown: out += "Page_Down"; break;
+        case Key::Minus: out += "minus"; break;
+        case Key::Equal: out += "equal"; break;
+        case Key::BracketLeft: out += "bracketleft"; break;
+        case Key::BracketRight: out += "bracketright"; break;
+        case Key::Backslash: out += "backslash"; break;
+        case Key::Semicolon: out += "semicolon"; break;
+        case Key::Apostrophe: out += "apostrophe"; break;
+        case Key::Comma: out += "comma"; break;
+        case Key::Period: out += "period"; break;
+        case Key::Slash: out += "slash"; break;
+        case Key::Grave: out += "grave"; break;
+        case Key::F13: out += "f13"; break;
+        case Key::F14: out += "f14"; break;
+        case Key::F15: out += "f15"; break;
+        case Key::F16: out += "f16"; break;
+        case Key::F17: out += "f17"; break;
+        case Key::F18: out += "f18"; break;
+        case Key::F19: out += "f19"; break;
+        case Key::F20: out += "f20"; break;
         case Key::Unknown: break;
     }
     return out;
@@ -614,7 +648,7 @@ struct WaylandPortalHotkeys::Impl {
         dbus_message_iter_open_container(&entry, DBUS_TYPE_ARRAY, "{sv}",
                                          &props);
         appendStringVariant(&props, "description",
-                            "截2 全局热键（" + describeHotkey(spec) + "）");
+                            "J2 全局热键（" + describeHotkey(spec) + "）");
         appendStringVariant(&props, "preferred_trigger",
                             portalTriggerString(spec));
         dbus_message_iter_close_container(&entry, &props);

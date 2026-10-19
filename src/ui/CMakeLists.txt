@@ -1,4 +1,4 @@
-# 「截2」UI 层（ui）
+# 「J2」UI 层（ui）
 #
 # 依赖方向：ui -> platform -> core（允许）；ui 不得被下层反向依赖。
 # 本层是唯一允许使用 Qt 的地方。替换 UI 技术（Widgets <-> QML）
@@ -7,12 +7,14 @@
 add_executable(jie2 WIN32 MACOSX_BUNDLE
     ../../assets/brand/brand.qrc
     annotation_render.cpp
+    app_paths.cpp
     clothesline.cpp
     flight_overlay.cpp
     main.cpp
     ocr_runner.cpp
     pin_window.cpp
     selection_overlay.cpp
+    settings_dialog.cpp
     single_instance.cpp
     theme.cpp
     tray.cpp
@@ -43,7 +45,7 @@ if(APPLE)
     set_source_files_properties("${JIE2_APP_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(jie2 PROPERTIES
         MACOSX_BUNDLE_ICON_FILE "AppIcon.icns"
-        MACOSX_BUNDLE_BUNDLE_NAME "截2"
+        MACOSX_BUNDLE_BUNDLE_NAME "J2"
         MACOSX_BUNDLE_GUI_IDENTIFIER "app.jie2.desktop"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"

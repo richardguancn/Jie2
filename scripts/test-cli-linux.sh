@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」M6 命令行验证（Linux aarch64）
+# 「J2」M6 命令行验证（Linux aarch64）
 #
 # 覆盖：
 #   1. --size W H        强制输出尺寸

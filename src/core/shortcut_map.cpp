@@ -1,4 +1,5 @@
 #include "core/shortcut_map.h"
+#include "core/key_names.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -34,11 +35,6 @@ std::vector<std::string> splitPlus(const std::string& text) {
     return parts;
 }
 
-bool isSingleAlnum(const std::string& token) {
-    return token.size() == 1 &&
-           std::isalnum(static_cast<unsigned char>(token[0])) != 0;
-}
-
 } // namespace
 
 bool parseShortcutSpec(const std::string& text, ShortcutSpec* out) {
@@ -71,10 +67,9 @@ bool parseShortcutSpec(const std::string& text, ShortcutSpec* out) {
     }
 
     const std::string key = trimCopy(parts.back());
-    if (!isSingleAlnum(key)) {
+    if (!(spec.key = keyFromText(key))) {
         return false;  // 键必须是单个字母或数字
     }
-    spec.key = std::toupper(static_cast<unsigned char>(key[0]));
     *out = spec;
     return true;
 }

@@ -3,7 +3,7 @@
 #include "core/geometry.h"
 #include "core/image_buffer.h"
 
-// 「截2」图像内核 — 基础图像操作
+// 「J2」图像内核 — 基础图像操作
 // 约束：只依赖 C++ 标准库。所有操作返回新缓冲，不修改输入。
 
 namespace jie2::core {

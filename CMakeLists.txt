@@ -15,7 +15,7 @@ endif()
 # 解析版本，发布 tag 必须与它一致（.github/workflows/release.yml 会校验）。
 project(jie2
     VERSION 0.0.2
-    DESCRIPTION "截2 — 跨平台截图 / 标注 / 贴图工具"
+    DESCRIPTION "J2 — 跨平台截图 / 标注 / 贴图工具"
     LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)

@@ -1,4 +1,4 @@
-# 「截2」RPM 打包规格（fedora/RHEL/openEuler 系）
+# 「J2」RPM 打包规格（fedora/RHEL/openEuler 系）
 #
 # 与 deb/AppImage 一致的依赖策略：使用**发行版自带 Qt**，不捆绑运行时
 # （评估报告 3.1：老国产系统自带 Qt 的 glibc 兼容性要求）。
@@ -9,14 +9,14 @@
 Name:           jie2
 Version:        @VERSION@
 Release:        1
-Summary:        截2 — 截图 / 标注 / 贴图工具
+Summary:        J2 — 截图 / 标注 / 贴图工具
 License:        MIT
 BuildArch:      @ARCH@
 Requires:       qt6-qtbase, qt6-qtbase-gui, libX11
 # URL 暂缺（项目尚未设置公开主页）—— 不写占位地址。
 
 %description
-截2 是跨平台截图工具：区域/全屏截图、标注（矩形/椭圆/箭头/铅笔/马克笔/
+J2 是跨平台截图工具：区域/全屏截图、标注（矩形/椭圆/箭头/铅笔/马克笔/
 马赛克/模糊/文字/序号/放大镜）、屏幕贴图（置顶窗口）、截图衣架（顶部条带）、
 可插拔 OCR（系统/tesseract/自定义命令/OpenAI 兼容端点）与二维码识别。
 本包包含 GUI 主程序 jie2 与诊断工具 jie2-probe。

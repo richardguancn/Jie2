@@ -5,7 +5,7 @@
 
 #include "platform/hotkey.h"
 
-// 「截2」Linux/Wayland 全局热键 —— xdg-desktop-portal GlobalShortcuts 门户
+// 「J2」Linux/Wayland 全局热键 —— xdg-desktop-portal GlobalShortcuts 门户
 //
 // 为什么必须走门户（评估报告 3.2）：
 //   Wayland 没有全局热键的核心协议，应用无法自己"抢"按键。

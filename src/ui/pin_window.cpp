@@ -135,7 +135,7 @@ QImage imageFromText(const QString& text) {
 PinWindow::PinWindow(QImage image, QWidget* parent) : QWidget(parent) {
     source_ = std::move(image);
 
-    setWindowTitle(QStringLiteral("截2 贴图"));
+    setWindowTitle(QStringLiteral("J2 贴图"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::Tool |
                    Qt::NoDropShadowWindowHint);

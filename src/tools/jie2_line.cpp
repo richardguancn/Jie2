@@ -1,4 +1,4 @@
-// 「截2」Wayland 顶部条（layer-shell 衣架渲染进程）
+// 「J2」Wayland 顶部条（layer-shell 衣架渲染进程）
 //
 // 背景与定位（评估报告 3.2 / B 项）：
 //   Wayland 会话下，普通 xdg-toplevel 窗口**不能定位**（合成器不接受
@@ -664,7 +664,7 @@ int main(int argc, char** argv) {
             once = true;
         } else if (arg == "--help" || arg == "-h") {
             std::printf(
-                "jie2-line —— Wayland layer-shell 顶部条（截2 衣架渲染进程）\n"
+                "jie2-line —— Wayland layer-shell 顶部条（J2 衣架渲染进程）\n"
                 "用法：jie2-line [--items FILE] [--height N] [--timeout-ms N] [--once]\n");
             return 0;
         } else {

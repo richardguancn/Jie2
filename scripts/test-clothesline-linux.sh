@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」衣架（M3，tendedero 合并）端到端验证
+# 「J2」衣架（M3，tendedero 合并）端到端验证
 #
 # 场景：
 #   1. 先截两张图（填充历史）；

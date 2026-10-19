@@ -1,4 +1,4 @@
-// 「截2」测试辅助工具（仅用于验证，不进产品）
+// 「J2」测试辅助工具（仅用于验证，不进产品）
 //
 // 创建一个**普通顶层窗口**（非 override-redirect）作为窗口吸附的目标。
 // 为什么不能用 scripts/color_window.c：那个窗口是 override-redirect 的，

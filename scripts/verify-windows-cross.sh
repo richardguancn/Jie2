@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Windows 平台后端交叉编译验证
+# 「J2」Windows 平台后端交叉编译验证
 #
 # 为什么需要这个脚本：
 #   Windows 后端（src/platform/windows/）在本机（macOS 宿主 + Linux 容器）

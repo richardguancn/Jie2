@@ -1,4 +1,4 @@
-// 「截2」macOS 平台实现
+// 「J2」macOS 平台实现
 //
 // 选型说明（与评估报告 1.4 对齐）：
 //   全局热键用 Carbon RegisterEventHotKey —— 与 Snipaste 在 macOS 上的做法一致，
@@ -146,7 +146,41 @@ UInt32 toCarbonKeycode(Key key) {
         case Key::F10: return kVK_F10;
         case Key::F11: return kVK_F11;
         case Key::F12: return kVK_F12;
-        case Key::Unknown: break;
+        case Key::Space: return kVK_Space;
+            case Key::Tab: return kVK_Tab;
+            case Key::Return: return kVK_Return;
+            case Key::Escape: return kVK_Escape;
+            case Key::Backspace: return kVK_Delete;
+            case Key::Delete: return kVK_ForwardDelete;
+            case Key::Insert: return kVK_Help;
+            case Key::Home: return kVK_Home;
+            case Key::End: return kVK_End;
+            case Key::Left: return kVK_LeftArrow;
+            case Key::Right: return kVK_RightArrow;
+            case Key::Up: return kVK_UpArrow;
+            case Key::Down: return kVK_DownArrow;
+            case Key::PageUp: return kVK_PageUp;
+            case Key::PageDown: return kVK_PageDown;
+            case Key::Minus: return kVK_ANSI_Minus;
+            case Key::Equal: return kVK_ANSI_Equal;
+            case Key::BracketLeft: return kVK_ANSI_LeftBracket;
+            case Key::BracketRight: return kVK_ANSI_RightBracket;
+            case Key::Backslash: return kVK_ANSI_Backslash;
+            case Key::Semicolon: return kVK_ANSI_Semicolon;
+            case Key::Apostrophe: return kVK_ANSI_Quote;
+            case Key::Comma: return kVK_ANSI_Comma;
+            case Key::Period: return kVK_ANSI_Period;
+            case Key::Slash: return kVK_ANSI_Slash;
+            case Key::Grave: return kVK_ANSI_Grave;
+            case Key::F13: return kVK_F13;
+            case Key::F14: return kVK_F14;
+            case Key::F15: return kVK_F15;
+            case Key::F16: return kVK_F16;
+            case Key::F17: return kVK_F17;
+            case Key::F18: return kVK_F18;
+            case Key::F19: return kVK_F19;
+            case Key::F20: return kVK_F20;
+            case Key::Unknown: break;
     }
     return UINT32_MAX;
 }
@@ -265,6 +299,40 @@ public:
             g_eventHandler = nullptr;
             g_handlerInstalled = false;
         }
+    }
+
+    // 遮罩窗口层级提升（远程桌面 / 全屏应用场景）。
+    //
+    // 三个动作缺一不可：
+    //   ① level 提到 NSStatusWindowLevel —— Qt 的 WindowStaysOnTopHint 只到
+    //      浮动层（NSFloatingWindowLevel = 3），低于全屏窗口与屏幕共享窗口；
+    //   ② collectionBehavior 加 CanJoinAllSpaces + FullScreenAuxiliary ——
+    //      全屏应用（含屏幕共享全屏）处在**独立 Space** 里，不带这两个标志
+    //      的窗口根本不会出现在那个 Space，用户表现为"必须先退出全屏/切换
+    //      窗口才能看到遮罩"；
+    //   ③ activateIgnoringOtherApps —— 菜单栏应用（LSUIElement）创建窗口
+    //      默认不激活应用，键盘事件（Esc / 回车 / F5）收不到。
+    bool promoteOverlayWindow(void* nativeWindow) override {
+        if (nativeWindow == nullptr) {
+            return false;
+        }
+        NSView* view = static_cast<NSView*>(nativeWindow);
+        if (![view isKindOfClass:[NSView class]]) {
+            return false;
+        }
+        NSWindow* window = [view window];
+        if (window == nil) {
+            return false;
+        }
+        [window setLevel:NSStatusWindowLevel];
+        [window setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                       NSWindowCollectionBehaviorFullScreenAuxiliary |
+                                       NSWindowCollectionBehaviorStationary)];
+        // 全屏 Space 下让窗口不随内容缩放，保持在屏幕坐标上。
+        [window setRestorable:NO];
+        [NSApp activateIgnoringOtherApps:YES];
+        [window makeKeyAndOrderFront:nil];
+        return true;
     }
 
     // ---- 抓屏（M1）----
@@ -604,7 +672,7 @@ private:
             return CaptureResult::failure(
                 trusted ? "系统返回空图像（该显示器可能已休眠）"
                         : "系统未返回截图，录屏权限预检查也未确认。若已授权，"
-                          "请完全退出截2再打开后重试；不要仅凭此检查重复授权");
+                          "请完全退出J2再打开后重试；不要仅凭此检查重复授权");
         }
         const size_t width = CGImageGetWidth(image);
         const size_t height = CGImageGetHeight(image);

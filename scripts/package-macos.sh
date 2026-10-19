@@ -37,7 +37,7 @@ ARCH="$(uname -m)"
 WORK="$(pwd)"
 ZIP="$WORK/$OUT_DIR/jie2-${VERSION}-macos-${ARCH}.zip"
 DMG="$WORK/$OUT_DIR/jie2-${VERSION}-macos-${ARCH}.dmg"
-VOLNAME="截2 ${VERSION}"
+VOLNAME="J2 ${VERSION}"
 
 if [ ! -d "$APP_SRC" ]; then
     echo "错误：找不到 $APP_SRC，请先构建（cmake --build $BUILD_DIR）" >&2

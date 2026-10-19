@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」应用图标：使用已校验的导出文件，常用尺寸不需要额外依赖。
+# 「J2」应用图标：使用已校验的导出文件，常用尺寸不需要额外依赖。
 # 用法：bash packaging/make-icon.sh <输出路径.png> [尺寸]
 set -eu
 OUT="${1:?用法: make-icon.sh <out.png> [size]}"

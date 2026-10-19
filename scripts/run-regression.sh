@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Linux aarch64 全量回归（容器内运行）
+# 「J2」Linux aarch64 全量回归（容器内运行）
 #
 # 每项独立超时（timeout），任何一项卡死不会拖垮整轮：
 #   - 非交互项直接跑；

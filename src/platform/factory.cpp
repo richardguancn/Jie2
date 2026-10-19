@@ -22,7 +22,7 @@ public:
     core::PlatformCapabilities probe() const override {
         core::PlatformCapabilities caps;
         caps.session = core::SessionType::Unknown;
-        caps.sessionDetail = "当前平台尚未实现「截2」的平台集成层";
+        caps.sessionDetail = "当前平台尚未实现「J2」的平台集成层";
         caps.screenCapture = {core::CapabilityStatus::Unknown, ""};
         caps.globalHotkey = {core::CapabilityStatus::Unknown, ""};
         caps.alwaysOnTop = {core::CapabilityStatus::Unknown, ""};

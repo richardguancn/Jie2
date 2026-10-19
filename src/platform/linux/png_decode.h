@@ -6,7 +6,7 @@
 
 #include "core/image_buffer.h"
 
-// 「截2」平台层 — PNG 解码（精简版）
+// 「J2」平台层 — PNG 解码（精简版）
 //
 // 为什么不放 core 层：
 //   core 的硬约束是"只依赖 C++ 标准库"（见 src/core/CMakeLists.txt），

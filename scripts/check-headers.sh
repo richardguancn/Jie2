@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」头文件自包含检查
+# 「J2」头文件自包含检查
 #
 # 为什么需要这个脚本：
 #   一次真实事故 —— clothesline.h 的 signals 里用了 QString 但没 include <QString>，

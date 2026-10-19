@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Linux 交互链路验证（Xvfb + xdotool）
+# 「J2」Linux 交互链路验证（Xvfb + xdotool）
 #
 # 覆盖：选择区域 → 绘制标注（矩形/箭头）→ 撤销 → 重做 → 换颜色 → 保存。
 # 断言：保存的 PNG 尺寸等于选区尺寸；图像里能找到标注颜色像素；

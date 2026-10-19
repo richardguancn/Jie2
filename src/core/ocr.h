@@ -4,7 +4,7 @@
 
 #include "core/config.h"
 
-// 「截2」OCR 类型与配置（M5）
+// 「J2」OCR 类型与配置（M5）
 //
 // 架构决策（评估报告 4.4）：识别模型可自由配置，不硬编码单一服务。
 // 本文件只放**纯类型与配置解析**（不依赖 Qt / 平台 API）：
@@ -20,11 +20,11 @@ namespace jie2::core {
 
 /// OCR 后端类型。
 enum class OcrBackendKind {
-    Auto,              // 自动：优先系统能力（macOS Vision），否则 tesseract
+    Auto,              // 兼容旧 auto 名称：使用大模型
     System,            // 强制系统能力
     Tesseract,         // 系统 tesseract 命令（离线）
     CustomCommand,     // 用户自定义命令行（stdin 收图 / stdout 出文本）
-    OpenAiCompatible,  // OpenAI 兼容端点（云端，需显式同意）
+    OpenAiCompatible,  // OpenAI 兼容大模型端点（默认，发送前确认）
 };
 
 const char* toString(OcrBackendKind kind);
@@ -56,16 +56,16 @@ struct OcrResult {
 
 /// OCR 配置（从 jie2.conf 的 "ocr." 前缀键读取）。
 struct OcrConfig {
-    OcrBackendKind backend = OcrBackendKind::Auto;
+    OcrBackendKind backend = OcrBackendKind::OpenAiCompatible;
     std::string language = "chi_sim+eng";  // tesseract 语言串 / 系统后端的语言提示
     std::string command;                   // 自定义命令行（可执行文件路径或含参数）
     std::string endpoint;                  // OpenAI 兼容 base URL
     std::string model;                     // 模型名
-    std::string apiKey;                    // 云端 Key（界面层负责加密存储）
-    int timeoutMs = 15000;
+    std::string apiKey;                    // 服务密钥（配置文件仅当前用户可读写）
+    int timeoutMs = 60000;
 
     /// 是否为云端后端（决定是否需要"联网需显式同意"的提示）。
-    bool isCloud() const { return backend == OcrBackendKind::OpenAiCompatible; }
+    bool isCloud() const { return backend == OcrBackendKind::OpenAiCompatible || backend == OcrBackendKind::Auto; }
 };
 
 /// 从配置读取（键：ocr.backend / ocr.language / ocr.command /

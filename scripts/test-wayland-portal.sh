@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Wayland GlobalShortcuts portal 端到端验证
+# 「J2」Wayland GlobalShortcuts portal 端到端验证
 #
 # 场景（在 dbus-run-session 提供的私有会话总线上）：
 #   1. 启动 mock 门户（scripts/mock-portal.py），它按协议实现

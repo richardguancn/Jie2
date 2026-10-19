@@ -26,7 +26,10 @@
 #include "core/ocr.h"
 #include "platform/platform.h"
 #include "ui/annotation_render.h"
+#include "ui/app_paths.h"
 #include "ui/ocr_runner.h"
+#include <QSslSocket>
+#include <QBuffer>
 #include "ui/pin_window.h"
 #include "ui/single_instance.h"
 #include "ui/tray.h"
@@ -292,9 +295,7 @@ int runTestOcr(const QString& backendName) {
     // 再用命令行参数覆盖后端 —— 这样 --test-ocr 测的是"用户真实配置"，
     // 自定义命令 / 端点等参数都不必在命令行重复传。
     core::OcrConfig config;
-    const QString configPath =
-        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
-        QStringLiteral("/jie2.conf");
+    const QString configPath = jie2::ui::appConfigFile();
     {
         QFile file(configPath);
         if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -522,7 +523,7 @@ QString singleInstanceId() {
 /// 命令行用法（--help）。
 void printUsage() {
     std::printf(
-        "截2 %s —— 跨平台截图 / 标注 / 贴图工具\n"
+        "J2 %s —— 跨平台截图 / 标注 / 贴图工具\n"
         "\n"
         "运行实例命令（发送给已在运行的实例；无实例时报错）：\n"
         "  --empty-group            清空当前贴图分组\n"
@@ -547,10 +548,51 @@ void printUsage() {
         "  --active-screen          用光标所在屏（默认主屏）\n"
         "  --barcode-decode FILE    对本地图片识别二维码/条形码\n"
         "\n"
+        "自检（不需要交互）：\n"
+        "  --test-overlay-promote   截图遮罩的窗口层级提升（全屏/远程桌面场景）\n"
+        "  --test-annotate <out>    标注合成\n"
+        "  --test-pin <prefix>      贴图变换\n"
+        "  --test-ocr [backend]     文字识别\n"
+        "  --test-barcode           二维码/条形码\n"
+        "  --test-pin-groups        贴图分组\n"
+        "\n"
         "其它：\n"
         "  --version                版本\n"
         "  --help                   本帮助\n",
         JIE2_VERSION);
+}
+
+/// 遮罩层级提升自检（--test-overlay-promote）。
+///
+/// 建一个与截图遮罩同类的无边框置顶窗口，交给平台层提升，然后读回
+/// 真实结果。它不能证明"盖住了远程桌面窗口"（那需要人眼确认），
+/// 但能证明：原生窗口句柄可解析、层级设置调用成功、不崩溃。
+int runTestOverlayPromote() {
+    auto platform = jie2::platform::createPlatform();
+    if (!platform) {
+        std::fprintf(stderr, "promote: FAIL 平台层不可用\n");
+        return 1;
+    }
+    QWidget window;
+    window.setWindowTitle(QStringLiteral("J2 overlay promote probe"));
+    window.setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
+                          Qt::WindowStaysOnTopHint | Qt::NoDropShadowWindowHint);
+    window.setGeometry(120, 120, 320, 200);
+    window.show();
+    QCoreApplication::processEvents();
+    const WId handle = window.winId();
+    const bool promoted =
+        platform->promoteOverlayWindow(reinterpret_cast<void*>(handle));
+    std::printf("promote: %s (handle=%llu, platform=%s)\n",
+                promoted ? "ok" : "unsupported",
+                static_cast<unsigned long long>(handle),
+                platform->name().c_str());
+    if (!promoted) {
+        std::printf("说明：当前会话不允许客户端自定窗口层级"
+                    "（Wayland 合成器或未知平台）；全屏/远程桌面下遮罩可能被盖住。\n");
+        return 2;
+    }
+    return 0;
 }
 
 } // namespace
@@ -561,6 +603,7 @@ int main(int argc, char** argv) {
     bool selectMode = false;
     bool hasSelectRect = false;
     bool testPinGroups = false;  // --test-pin-groups
+    bool testOverlayPromote = false;  // --test-overlay-promote
     bool activeScreen = false;   // --active-screen：用光标所在屏而非主屏
     bool whiteboard = false;     // --whiteboard [color]
     QString whiteboardColor = QStringLiteral("#ffffff");
@@ -665,6 +708,9 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--test-pin-groups") == 0) {
             testPinGroups = true;
         }
+        if (std::strcmp(argv[i], "--test-overlay-promote") == 0) {
+            testOverlayPromote = true;
+        }
         // barcode-decode FILE：对给定文件扫码（专业版对齐项）。
         if (std::strcmp(argv[i], "--barcode-decode") == 0 && i + 1 < argc) {
             barcodeFile = QString::fromUtf8(argv[++i]);
@@ -715,8 +761,8 @@ int main(int argc, char** argv) {
         if (!jie2::ui::SingleInstanceChannel::sendToRunning(
                 appId, QStringList{notifyCommand})) {
             std::fprintf(stderr,
-                         "截2 未在运行：没有可接收「%s」的实例。\n"
-                         "先启动截2（直接运行，无参数），再执行本命令。\n",
+                         "J2 未在运行：没有可接收「%s」的实例。\n"
+                         "先启动 J2（直接运行，无参数），再执行本命令。\n",
                          notifyCommand.toUtf8().constData());
             return 1;
         }
@@ -725,22 +771,45 @@ int main(int argc, char** argv) {
     }
 
     QApplication app(argc, argv);
+    if (QCoreApplication::arguments().contains(QStringLiteral("--self-check"))) {
+        // QApplication 初始化本身会加载平台插件；再验证图像与 HTTPS 能力。
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::white);
+        QByteArray png; QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly);
+        if (!image.save(&buffer, "PNG") || QImage::fromData(png).isNull() || !QSslSocket::supportsSsl()) {
+            std::fprintf(stderr, "self-check failed: PNG or TLS unavailable\n"); return 1;
+        }
+        std::printf("self-check passed: GUI, PNG, TLS\n"); return 0;
+    }
+
     QApplication::setApplicationName(QStringLiteral("jie2"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/brand/app/icon-256.png")));
-    QApplication::setApplicationDisplayName(QStringLiteral("截2"));
+    QApplication::setApplicationDisplayName(QStringLiteral("J2"));
     QApplication::setApplicationVersion(QStringLiteral(JIE2_VERSION));
     // 托盘常驻应用：关闭最后一个窗口不等于退出。
     QApplication::setQuitOnLastWindowClosed(false);
 
+    // 旧版本把配置放在 macOS 的 ~/Library/Preferences（受系统保护、
+    // 普通程序写不进去）。升级后先把已有配置/历史搬到新位置。
+    jie2::ui::migrateLegacyAppData(
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation));
+
     auto platform = jie2::platform::createPlatform();
     if (platform == nullptr) {
-        QMessageBox::critical(nullptr, QStringLiteral("截2"),
+        QMessageBox::critical(nullptr, QStringLiteral("J2"),
                               QStringLiteral("平台集成层初始化失败"));
         return 1;
     }
 
     jie2::ui::TrayController controller(std::move(platform));
     controller.setCaptureOverrides(overrides);
+
+    // 遮罩层级提升验证入口（远程桌面 / 全屏窗口场景）：
+    // 建一个与截图遮罩同类型标志的真实窗口，调用平台层的提升接口。
+    // 这是该功能唯一能在真机上自证的部分（"确实盖住了某人的全屏窗口"
+    // 只能由用户目视确认，代码不可能自证）。
+    if (testOverlayPromote) {
+        return runTestOverlayPromote();
+    }
 
     // 标注渲染验证入口：不需要抓屏与交互，纯图像合成。
     if (!testAnnotatePath.isEmpty()) {
@@ -875,7 +944,7 @@ int main(int argc, char** argv) {
     // 而 --empty-group / --show-group-manager 也有一个稳定的投递目标。
     const QString appId = singleInstanceId();
     if (jie2::ui::SingleInstanceChannel::sendToRunning(appId, QStringList{})) {
-        std::printf("截2 已在运行（已唤起现有实例）\n");
+        std::printf("J2 已在运行（已唤起现有实例）\n");
         return 0;
     }
     jie2::ui::SingleInstanceChannel channel;
@@ -884,10 +953,10 @@ int main(int argc, char** argv) {
         // 给它一小段时间，再试一次送达。
         QThread::msleep(150);
         if (jie2::ui::SingleInstanceChannel::sendToRunning(appId, QStringList{})) {
-            std::printf("截2 已在运行（已唤起现有实例）\n");
+            std::printf("J2 已在运行（已唤起现有实例）\n");
             return 0;
         }
-        std::fprintf(stderr, "截2 启动失败：单实例通道不可用（%s）\n",
+        std::fprintf(stderr, "J2 启动失败：单实例通道不可用（%s）\n",
                      channel.lastError().toUtf8().constData());
         return 1;
     }

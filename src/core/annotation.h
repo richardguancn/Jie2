@@ -7,7 +7,7 @@
 #include "core/geometry.h"
 #include "core/image_buffer.h"
 
-// 「截2」图像内核 — 标注模型（M2）
+// 「J2」图像内核 — 标注模型（M2）
 //
 // 设计说明：
 //   - 模型只描述"画了什么"，不描述"怎么画"。渲染在 UI 层（QPainter），

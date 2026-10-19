@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」自定义应用内快捷键验证（专业版对齐项 v2.11.3）
+# 「J2」自定义应用内快捷键验证（专业版对齐项 v2.11.3）
 #
 # 场景：配置 shortcut.tool.text=x（文字工具从 T 改绑到 X）
 #       + shortcut.style.dashed=none（禁用虚线快捷键）。

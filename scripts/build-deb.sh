@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Debian 打包脚本（M7）
+# 「J2」Debian 打包脚本（M7）
 #
 # 产出：jie2_<版本>_<架构>.deb
 # 内容：/usr/bin/jie2（GUI）、/usr/bin/jie2-probe（诊断工具）、
@@ -68,7 +68,7 @@ Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libqt6widgets6 | qt6-base, libqt6gui6, libqt6core6, libqt6network6, libx11-6, libc6
 Maintainer: jie2
-Description: 截2 — 截图 / 标注 / 贴图工具
+Description: J2 — 截图 / 标注 / 贴图工具
  跨平台截图工具：区域/全屏截图、标注（矩形/椭圆/箭头/铅笔/马克笔/
  马赛克/模糊/文字/序号）、屏幕贴图、截图衣架、可插拔 OCR。
  本包含 GUI 主程序 jie2 与诊断工具 jie2-probe。

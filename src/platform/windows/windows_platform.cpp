@@ -1,4 +1,4 @@
-// 「截2」Windows 平台实现（Win32）
+// 「J2」Windows 平台实现（Win32）
 //
 // 状态声明（重要）：
 //   本文件已通过 **mingw-w64 交叉编译验证**（编译 + 链接通过，
@@ -77,7 +77,41 @@ UINT toVirtualKey(Key key) {
         case Key::F7: return VK_F7; case Key::F8: return VK_F8;
         case Key::F9: return VK_F9; case Key::F10: return VK_F10;
         case Key::F11: return VK_F11; case Key::F12: return VK_F12;
-        case Key::Unknown: break;
+        case Key::Space: return VK_SPACE;
+            case Key::Tab: return VK_TAB;
+            case Key::Return: return VK_RETURN;
+            case Key::Escape: return VK_ESCAPE;
+            case Key::Backspace: return VK_BACK;
+            case Key::Delete: return VK_DELETE;
+            case Key::Insert: return VK_INSERT;
+            case Key::Home: return VK_HOME;
+            case Key::End: return VK_END;
+            case Key::Left: return VK_LEFT;
+            case Key::Right: return VK_RIGHT;
+            case Key::Up: return VK_UP;
+            case Key::Down: return VK_DOWN;
+            case Key::PageUp: return VK_PRIOR;
+            case Key::PageDown: return VK_NEXT;
+            case Key::Minus: return VK_OEM_MINUS;
+            case Key::Equal: return VK_OEM_PLUS;
+            case Key::BracketLeft: return VK_OEM_4;
+            case Key::BracketRight: return VK_OEM_6;
+            case Key::Backslash: return VK_OEM_5;
+            case Key::Semicolon: return VK_OEM_1;
+            case Key::Apostrophe: return VK_OEM_7;
+            case Key::Comma: return VK_OEM_COMMA;
+            case Key::Period: return VK_OEM_PERIOD;
+            case Key::Slash: return VK_OEM_2;
+            case Key::Grave: return VK_OEM_3;
+            case Key::F13: return VK_F13;
+            case Key::F14: return VK_F14;
+            case Key::F15: return VK_F15;
+            case Key::F16: return VK_F16;
+            case Key::F17: return VK_F17;
+            case Key::F18: return VK_F18;
+            case Key::F19: return VK_F19;
+            case Key::F20: return VK_F20;
+            case Key::Unknown: break;
     }
     return 0;
 }
@@ -532,6 +566,35 @@ public:
     }
 
     void releaseAllHotkeys() override { hotkeys_.releaseAll(); }
+
+    // 遮罩窗口层级提升（远程桌面 / 独占全屏场景）。
+    //
+    // 全屏的前台窗口（含 RDP 客户端全屏）会把普通置顶窗口压在下面，
+    // SetForegroundWindow 又受前台锁限制 —— 这里三个动作一起做：
+    // ① HWND_TOPMOST 提到最上层；② 解除前台锁再抢前台；③ SetFocus
+    // 让键盘事件（Esc / 回车 / F5）直达遮罩。
+    bool promoteOverlayWindow(void* nativeWindow) override {
+        HWND window = static_cast<HWND>(nativeWindow);
+        if (window == nullptr) {
+            return false;
+        }
+        SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        // 前台锁：本进程刚收到全局热键，通常已被允许；失败不视为错误，
+        // 因为 SetWindowPos(TOPMOST) 已经保证可见性。
+        const DWORD foregroundThread =
+            GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+        const DWORD selfThread = GetCurrentThreadId();
+        if (foregroundThread != 0 && foregroundThread != selfThread) {
+            AttachThreadInput(foregroundThread, selfThread, TRUE);
+            SetForegroundWindow(window);
+            AttachThreadInput(foregroundThread, selfThread, FALSE);
+        } else {
+            SetForegroundWindow(window);
+        }
+        SetFocus(window);
+        return true;
+    }
 
     // ---- 文字识别（M5）----
 

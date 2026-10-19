@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」窗口吸附端到端验证（Xvfb + xdotool + 测试窗口）
+# 「J2」窗口吸附端到端验证（Xvfb + xdotool + 测试窗口）
 #
 # 场景：
 #   1. 起 Xvfb，创建一个**普通顶层窗口**（scripts/window_target）在已知位置；

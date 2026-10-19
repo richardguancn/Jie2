@@ -41,7 +41,7 @@ OcrBackendKind parseOcrBackend(const std::string& name, bool* ok) {
 OcrConfig parseOcrConfig(const Config& config, std::string* warning) {
     OcrConfig ocr;
 
-    const std::string backendName = config.get("ocr.backend", "auto");
+    const std::string backendName = config.get("ocr.backend", "openai-compatible");
     bool known = true;
     ocr.backend = parseOcrBackend(backendName, &known);
     if (!known && warning != nullptr) {
@@ -53,7 +53,7 @@ OcrConfig parseOcrConfig(const Config& config, std::string* warning) {
     ocr.endpoint = config.get("ocr.endpoint", "");
     ocr.model = config.get("ocr.model", "");
     ocr.apiKey = config.get("ocr.api_key", "");
-    ocr.timeoutMs = config.getInt("ocr.timeout_ms", 15000);
+    ocr.timeoutMs = config.getInt("ocr.timeout_ms", 60000);
     if (ocr.timeoutMs < 1000) {
         ocr.timeoutMs = 1000;  // 下限：过小的超时会让识别必然失败
     }

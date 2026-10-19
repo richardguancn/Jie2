@@ -1,4 +1,4 @@
-# 「截2」发布流水线
+# 「J2」发布流水线
 #
 # 触发：
 #   - 推送形如 0.0.1 或 v0.0.1 的 tag —— 构建各平台产物并创建 Release；
@@ -209,6 +209,23 @@ jobs:
           bash scripts/package-windows.sh build-windows dist
           ls -lh dist
 
+      - name: 解压并在隔离搜索路径下启动成品
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem dist/*-windows-x64.zip | Select-Object -First 1
+          Expand-Archive $archive.FullName -DestinationPath windows-package-check
+          $exe = Get-ChildItem windows-package-check -Recurse -Filter jie2.exe | Select-Object -First 1
+          # 排除开发环境的 Qt / MinGW，强制从成品目录与系统目录加载依赖。
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
+          Remove-Item Env:QT_QPA_PLATFORM_PLUGIN_PATH -ErrorAction SilentlyContinue
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList '--self-check' -PassThru -WorkingDirectory $exe.DirectoryName -RedirectStandardOutput package-check.log -RedirectStandardError package-check-error.log
+          if (-not $process.WaitForExit(30000)) { $process.Kill(); throw '成品启动超时' }
+          Get-Content package-check.log, package-check-error.log
+          if ($process.ExitCode -ne 0) { throw "成品启动失败：$($process.ExitCode)" }
+          if (-not (Select-String -Path package-check.log -Pattern 'self-check passed' -Quiet)) { throw '缺少启动成功确认' }
+
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
@@ -250,7 +267,7 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --title "截2 $GITHUB_REF_NAME" \
+              --title "J2 $GITHUB_REF_NAME" \
               --generate-notes \
               artifacts/*
           fi

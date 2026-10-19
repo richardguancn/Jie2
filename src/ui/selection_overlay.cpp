@@ -59,6 +59,25 @@ QFont smallFont() {
 }
 
 /// Qt 修饰键 → core::ShortcutMap 的位组合。
+#ifdef Q_OS_MACOS
+unsigned shortcutModifiers(Qt::KeyboardModifiers mods) {
+    unsigned mask = 0;
+    if (mods.testFlag(Qt::MetaModifier)) {
+        mask |= core::kScCtrl;
+    }
+    if (mods.testFlag(Qt::AltModifier)) {
+        mask |= core::kScAlt;
+    }
+    if (mods.testFlag(Qt::ShiftModifier)) {
+        mask |= core::kScShift;
+    }
+    if (mods.testFlag(Qt::ControlModifier)) {
+        mask |= core::kScMeta;
+    }
+    return mask;
+}
+
+#else
 unsigned shortcutModifiers(Qt::KeyboardModifiers mods) {
     unsigned mask = 0;
     if (mods.testFlag(Qt::ControlModifier)) {
@@ -75,6 +94,8 @@ unsigned shortcutModifiers(Qt::KeyboardModifiers mods) {
     }
     return mask;
 }
+
+#endif
 
 /// 由拖拽两点得到选区矩形。
 ///
@@ -103,7 +124,8 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
       recapture_(std::move(options.recapture)),
       snapCandidates_(std::move(options.snapCandidates)),
       paletteSize_(options.paletteSize),
-      shortcuts_(options.shortcuts) {
+      shortcuts_(options.shortcuts),
+      promoteWindow_(std::move(options.promoteWindow)) {
     // 主题：深色 = 现有观感（默认）；浅色给自绘面板整套浅色板。
     if (options.darkTheme) {
         chrome_ = ChromeColors{QColor(28, 28, 32, 235), QColor(70, 70, 78),
@@ -123,7 +145,7 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
 
     // 具名窗口标题：空标题在 macOS 的辅助功能树里显示为占位符，
     // 会让自动化工具（含测试）无法稳定引用这个窗口。
-    setWindowTitle(QStringLiteral("截2 选择截图区域"));
+    setWindowTitle(QStringLiteral("J2 选择截图区域"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::NoDropShadowWindowHint);
     setWindowModality(Qt::ApplicationModal);
@@ -971,7 +993,7 @@ void SelectionOverlay::paintHint(QPainter& painter) const {
 
     QStringList parts;
     if (hasSelection_) {
-        parts << QStringLiteral("选区内拖拽绘制 · 工具见工具条");
+        parts << QStringLiteral("拖动八手柄调整选区 · 选区内拖拽绘制 · 工具见工具条");
         parts << QStringLiteral("快捷键：%1 虚线 / %2 圆角 / %3 椭圆 / %4 双向箭头")
                      .arg(keyLabel("style.dashed"), keyLabel("style.corner"),
                           keyLabel("shape.ellipse"), keyLabel("arrow.both"));
@@ -1033,7 +1055,7 @@ void SelectionOverlay::paintSelectionChrome(QPainter& painter,
     // 八个圆形手柄：边中点与角点均可拖动。
     painter.setPen(QPen(Qt::white, 1.2));
     painter.setBrush(kAccent);
-    for (const auto& point : cropHandles()) painter.drawEllipse(QPointF(point), 4.5, 4.5);
+    for (const auto& point : cropHandles()) painter.drawEllipse(QPointF(point), 5.5, 5.5);
 
     // 与参考图一致，默认只显示尺寸；macOS 使用逻辑点并标注 pt。
 #ifdef Q_OS_MACOS
@@ -1072,9 +1094,22 @@ std::array<QPoint, 8> SelectionOverlay::cropHandles() const {
 int SelectionOverlay::cropHandleAt(const QPoint& pos) const {
     if (!hasSelection_) return -1;
     const auto handles = cropHandles();
+    // 命中区 14（曼哈顿距离）：手柄圆点本身只有 ~5px，命中区太小会让用户
+    // 以为"选区不能调整"（实测反馈即如此）——命中区必须明显大于视觉尺寸。
     for (int i = 0; i < 8; ++i)
-        if ((handles[i] - pos).manhattanLength() <= 9) return i;
+        if ((handles[i] - pos).manhattanLength() <= 14) return i;
     return -1;
+}
+
+Qt::CursorShape SelectionOverlay::cursorForCropHandle(int handle) {
+    // 手柄序号：0 TL, 1 上中, 2 TR, 3 右中, 4 BR, 5 下中, 6 BL, 7 左中。
+    switch (handle) {
+        case 0: case 4: return Qt::SizeFDiagCursor;
+        case 2: case 6: return Qt::SizeBDiagCursor;
+        case 1: case 5: return Qt::SizeVerCursor;
+        case 3: case 7: return Qt::SizeHorCursor;
+        default: return Qt::CrossCursor;
+    }
 }
 
 void SelectionOverlay::updateCropGesture(const QPoint& pos) {
@@ -1472,6 +1507,9 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
         cropStart_ = selectionRect_;
         cropPress_ = event->pos();
         movingCrop_ = cropHandle_ < 0;
+        // 手势期间锁定光标：拖动中不再随位置重算。
+        setCursor(movingCrop_ ? Qt::SizeAllCursor
+                              : cursorForCropHandle(cropHandle_));
         return;
     }
     // 已有选区且点击落在选区内 → 开始绘制/放置标注（而不是重开选区）。
@@ -1599,11 +1637,26 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
     toolbarHitTest(cursor_, &hover);
     if (hover != toolbarHover_) {
         toolbarHover_ = hover;
-        setCursor(hover >= 0 ? Qt::PointingHandCursor : Qt::CrossCursor);
         QToolTip::hideText();
         if (hover >= 0) {
             QToolTip::showText(event->globalPosition().toPoint(),
                               QString::fromUtf8(toolbarItems()[hover].label), this);
+        }
+    }
+    // 悬停光标反馈：工具条 → 手型；选区手柄 → 对应方向的调整光标；
+    // 未选工具时的选区内部 → 移动光标。没有反馈时用户无从发现手柄可拖。
+    if (drawing_ || dragging_ || erasing_ || movingSelection_ || resizingSelection_) {
+        // 手势进行中：保持手势开始时的光标，不随位置跳动。
+    } else if (hover >= 0) {
+        setCursor(Qt::PointingHandCursor);
+    } else {
+        const int hoverHandle = cropHandleAt(cursor_);
+        if (hoverHandle >= 0) {
+            setCursor(cursorForCropHandle(hoverHandle));
+        } else if (hasSelection_ && !toolChosen_ && selectionRect_.contains(cursor_)) {
+            setCursor(Qt::SizeAllCursor);
+        } else {
+            setCursor(Qt::CrossCursor);
         }
     }
 
@@ -1677,6 +1730,7 @@ void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
     if (cropHandle_ >= 0 || movingCrop_) {
         updateCropGesture(event->pos());
         cropHandle_ = -1; movingCrop_ = false;
+        setCursor(Qt::CrossCursor);  // 手势结束，交还悬停判定（下次 mouseMove 细化）
         return;
     }
     // 移动 / 缩放手势收尾：一次性入历史 + 日志（手势期间的实时帧不进撤销栈）。
@@ -1821,7 +1875,93 @@ void SelectionOverlay::wheelEvent(QWheelEvent* event) {
     QDialog::wheelEvent(event);
 }
 
+bool SelectionOverlay::event(QEvent* event) {
+    if (event->type() == QEvent::KeyPress) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+            const unsigned mods = shortcutModifiers(key->modifiers());
+            for (const auto& id : core::ShortcutMap::actionIds()) {
+                if (shortcuts_.matches(id, key->key(), mods)) {
+                    keyPressEvent(key); return true;
+                }
+            }
+        }
+    }
+    return QDialog::event(event);
+}
+
 void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
+    const unsigned scMods = shortcutModifiers(event->modifiers());
+    const int shortcutKey = event->key() == Qt::Key_Enter ? Qt::Key_Return : event->key();
+    // ---- 应用内快捷键（v2.11.3：可自定义；默认 T/N/E/M/D/R/O/B/Shift+B）----
+    //
+    // 走 ShortcutMap：用户可用配置 `shortcut.<动作>` 重绑或禁用（"none"），
+    // 修饰键要求精确匹配（按了 Ctrl+T 不会触发绑为 "t" 的动作）。
+    if (shortcuts_.matches("tool.text", shortcutKey, scMods)) {
+        currentTool_ = core::AnnotationTool::Text;
+        toolChosen_ = true;
+        showToast(QStringLiteral("工具：文字（点击位置输入）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("tool.number", shortcutKey, scMods)) {
+        currentTool_ = core::AnnotationTool::Number;
+        toolChosen_ = true;
+        showToast(QStringLiteral("工具：序号（点击放置，自动编号）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("tool.eraser", shortcutKey, scMods)) {
+        currentTool_ = core::AnnotationTool::Eraser;
+        toolChosen_ = true;
+        showToast(QStringLiteral("工具：橡皮擦（拖过即删除该标注）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("tool.magnifier", shortcutKey, scMods)) {
+        currentTool_ = core::AnnotationTool::Magnifier;
+        toolChosen_ = true;
+        showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("style.dashed", shortcutKey, scMods)) {
+        dashed_ = !dashed_;
+        showToast(dashed_ ? QStringLiteral("线型：虚线")
+                          : QStringLiteral("线型：实线"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("style.corner", shortcutKey, scMods)) {
+        cornerRadius_ = (cornerRadius_ + 8) % 32;
+        showToast(cornerRadius_ > 0
+                      ? QStringLiteral("圆角矩形：半径 %1").arg(cornerRadius_)
+                      : QStringLiteral("圆角矩形：关（直角）"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("shape.ellipse", shortcutKey, scMods)) {
+        ellipseShape_ = !ellipseShape_;
+        showToast(ellipseShape_
+                      ? QStringLiteral("形状：椭圆（对马克笔/马赛克/模糊/橡皮擦生效）")
+                      : QStringLiteral("形状：矩形"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("arrow.both", shortcutKey, scMods)) {
+        arrowBothEnds_ = !arrowBothEnds_;
+        showToast(arrowBothEnds_ ? QStringLiteral("箭头：双向")
+                                 : QStringLiteral("箭头：单向"));
+        update();
+        return;
+    }
+    if (shortcuts_.matches("arrow.reverse", shortcutKey, scMods)) {
+        arrowReverse_ = !arrowReverse_;
+        showToast(arrowReverse_ ? QStringLiteral("箭头：反向（头在起点）")
+                                : QStringLiteral("箭头：正向"));
+        update();
+        return;
+    }
     // 撤销 / 重做（Ctrl+Z / Ctrl+Shift+Z，macOS 上 Cmd 同样有效）。
     if (event->matches(QKeySequence::Undo)) {
         performUndo();
@@ -1832,8 +1972,6 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // 应用内快捷键的修饰键位（ShortcutMap 精确匹配用）。
-    const unsigned scMods = shortcutModifiers(event->modifiers());
     // 自由选中（专业版 v2.8）：Delete 删除选中标注；方向键微移（Shift = 10px）。
     if (selectedIndex_ >= 0 &&
         static_cast<std::size_t>(selectedIndex_) < annotations_.size()) {
@@ -1929,75 +2067,6 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
-    // ---- 应用内快捷键（v2.11.3：可自定义；默认 T/N/E/M/D/R/O/B/Shift+B）----
-    //
-    // 走 ShortcutMap：用户可用配置 `shortcut.<动作>` 重绑或禁用（"none"），
-    // 修饰键要求精确匹配（按了 Ctrl+T 不会触发绑为 "t" 的动作）。
-    if (shortcuts_.matches("tool.text", event->key(), scMods)) {
-        currentTool_ = core::AnnotationTool::Text;
-        toolChosen_ = true;
-        showToast(QStringLiteral("工具：文字（点击位置输入）"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("tool.number", event->key(), scMods)) {
-        currentTool_ = core::AnnotationTool::Number;
-        toolChosen_ = true;
-        showToast(QStringLiteral("工具：序号（点击放置，自动编号）"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("tool.eraser", event->key(), scMods)) {
-        currentTool_ = core::AnnotationTool::Eraser;
-        toolChosen_ = true;
-        showToast(QStringLiteral("工具：橡皮擦（拖过即删除该标注）"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("tool.magnifier", event->key(), scMods)) {
-        currentTool_ = core::AnnotationTool::Magnifier;
-        toolChosen_ = true;
-        showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("style.dashed", event->key(), scMods)) {
-        dashed_ = !dashed_;
-        showToast(dashed_ ? QStringLiteral("线型：虚线")
-                          : QStringLiteral("线型：实线"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("style.corner", event->key(), scMods)) {
-        cornerRadius_ = (cornerRadius_ + 8) % 32;
-        showToast(cornerRadius_ > 0
-                      ? QStringLiteral("圆角矩形：半径 %1").arg(cornerRadius_)
-                      : QStringLiteral("圆角矩形：关（直角）"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("shape.ellipse", event->key(), scMods)) {
-        ellipseShape_ = !ellipseShape_;
-        showToast(ellipseShape_
-                      ? QStringLiteral("形状：椭圆（对马克笔/马赛克/模糊/橡皮擦生效）")
-                      : QStringLiteral("形状：矩形"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("arrow.both", event->key(), scMods)) {
-        arrowBothEnds_ = !arrowBothEnds_;
-        showToast(arrowBothEnds_ ? QStringLiteral("箭头：双向")
-                                 : QStringLiteral("箭头：单向"));
-        update();
-        return;
-    }
-    if (shortcuts_.matches("arrow.reverse", event->key(), scMods)) {
-        arrowReverse_ = !arrowReverse_;
-        showToast(arrowReverse_ ? QStringLiteral("箭头：反向（头在起点）")
-                                : QStringLiteral("箭头：正向"));
-        update();
-        return;
-    }
 
     switch (event->key()) {
         case Qt::Key_Escape:
@@ -2090,6 +2159,10 @@ void SelectionOverlay::showEvent(QShowEvent* event) {
     raise();
     activateWindow();
     setFocus();
+    // 层级提升：Qt 的 StaysOnTopHint 只到普通浮动层，盖不住全屏应用与
+    // 远程桌面客户端窗口（后者常处在独立 Space / 独占全屏）。
+    // 不提升时用户看到的现象就是"按了热键，非要先切一下窗口才出现遮罩"。
+    promoteToFront();
     // 某些平台首次显示时焦点建立较晚，下一轮事件循环再抢一次。
     QTimer::singleShot(0, this, [this]() {
         if (screen_ != nullptr) {
@@ -2098,7 +2171,20 @@ void SelectionOverlay::showEvent(QShowEvent* event) {
         raise();
         activateWindow();
         setFocus();
+        promoteToFront();
     });
+}
+
+void SelectionOverlay::promoteToFront() {
+    if (!promoteWindow_) {
+        return;
+    }
+    // winId() 此刻才有效：QWidget::winId() 会强制创建原生窗口。
+    const WId handle = winId();
+    if (handle == 0) {
+        return;
+    }
+    promoteWindow_(reinterpret_cast<void*>(handle));
 }
 
 } // namespace jie2::ui

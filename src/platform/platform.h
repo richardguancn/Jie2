@@ -65,6 +65,27 @@ public:
 
     // ---- 系统文字识别（M5：OCR 的"系统能力"后端）----
 
+    // ---- 遮罩窗口层级提升（M1 增补：远程桌面 / 全屏应用场景）----
+
+    /// 把截图遮罩窗口提升到能盖住全屏应用与远程桌面客户端的层级，
+    /// 并让它拿到键盘焦点。
+    ///
+    /// 为什么必须由平台层做：`Qt::WindowStaysOnTopHint` 只映射到普通浮动层，
+    /// 而全屏窗口（含 macOS 的独立 Space、屏幕共享全屏窗口、Windows 的
+    /// 独占全屏、X11 的全屏应用）在同一层级之上 —— 用户看到的现象是
+    /// **"按了截图热键，必须先切一下窗口（或退出全屏）才能看到遮罩"**。
+    ///
+    /// nativeWindow 是平台原生窗口句柄：
+    ///   - macOS：NSView*（Qt 的 QWidget::winId()）
+    ///   - Windows：HWND
+    ///   - Linux X11：Window
+    /// Wayland 合成器不允许客户端自定层级，如实返回 false。
+    /// 返回 true 表示已施加提升动作（不保证合成器一定接受）。
+    virtual bool promoteOverlayWindow(void* nativeWindow) {
+        (void)nativeWindow;
+        return false;
+    }
+
     /// 用系统内置能力识别图像中的文字。
     ///   - macOS：Vision 框架（离线、零配置）
     ///   - Linux/Windows：无系统能力 → 返回 failure 并说明原因

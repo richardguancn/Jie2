@@ -1,4 +1,4 @@
-// 「截2」Linux 平台实现
+// 「J2」Linux 平台实现
 //
 // 设计要点（评估报告 3.2 / 3.5）：
 //   - X11 与 Wayland 是两套能力模型，必须分开如实报告，不能假装一致。
@@ -254,6 +254,40 @@ private:
             case Key::F7: return XK_F7; case Key::F8: return XK_F8;
             case Key::F9: return XK_F9; case Key::F10: return XK_F10;
             case Key::F11: return XK_F11; case Key::F12: return XK_F12;
+            case Key::Space: return XK_space;
+            case Key::Tab: return XK_Tab;
+            case Key::Return: return XK_Return;
+            case Key::Escape: return XK_Escape;
+            case Key::Backspace: return XK_BackSpace;
+            case Key::Delete: return XK_Delete;
+            case Key::Insert: return XK_Insert;
+            case Key::Home: return XK_Home;
+            case Key::End: return XK_End;
+            case Key::Left: return XK_Left;
+            case Key::Right: return XK_Right;
+            case Key::Up: return XK_Up;
+            case Key::Down: return XK_Down;
+            case Key::PageUp: return XK_Page_Up;
+            case Key::PageDown: return XK_Page_Down;
+            case Key::Minus: return XK_minus;
+            case Key::Equal: return XK_equal;
+            case Key::BracketLeft: return XK_bracketleft;
+            case Key::BracketRight: return XK_bracketright;
+            case Key::Backslash: return XK_backslash;
+            case Key::Semicolon: return XK_semicolon;
+            case Key::Apostrophe: return XK_apostrophe;
+            case Key::Comma: return XK_comma;
+            case Key::Period: return XK_period;
+            case Key::Slash: return XK_slash;
+            case Key::Grave: return XK_grave;
+            case Key::F13: return XK_F13;
+            case Key::F14: return XK_F14;
+            case Key::F15: return XK_F15;
+            case Key::F16: return XK_F16;
+            case Key::F17: return XK_F17;
+            case Key::F18: return XK_F18;
+            case Key::F19: return XK_F19;
+            case Key::F20: return XK_F20;
             case Key::Unknown: break;
         }
         return NoSymbol;
@@ -675,6 +709,63 @@ public:
 #endif
 #if defined(JIE2_HAVE_DBUS)
         portalHotkeys_.releaseAll();
+#endif
+    }
+
+    // 遮罩窗口层级提升（远程桌面 / 全屏应用场景）。
+    //
+    // X11 下窗口层级由窗口管理器按 EWMH 决定：Qt 的 StaysOnTop 只映射到
+    // _NET_WM_STATE_ABOVE，而全屏应用请求的是 _NET_WM_STATE_FULLSCREEN，
+    // 部分 WM（含国产桌面常见的 kwin/mutter/openbox 组合）会把全屏窗口
+    // 置于 ABOVE 之上。这里补齐三件事：
+    //   ① 追加 FULLSCREEN + ABOVE 状态（让 WM 认可我们也在最上层）；
+    //   ② 直接 XRaiseWindow（对不严格遵守 EWMH 的 WM 兜底）；
+    //   ③ XSetInputFocus 抢键盘焦点（全局热键触发时本进程未必是焦点）。
+    // Wayland 合成器不允许客户端自定层级，如实返回 false。
+    bool promoteOverlayWindow(void* nativeWindow) override {
+#if defined(JIE2_HAVE_X11)
+        if (detectSession().type != core::SessionType::X11) {
+            return false;
+        }
+        Display* display = XOpenDisplay(nullptr);
+        if (display == nullptr) {
+            return false;
+        }
+        const Window window = static_cast<Window>(
+            reinterpret_cast<std::uintptr_t>(nativeWindow));
+        bool ok = false;
+        if (window != 0) {
+            XRaiseWindow(display, window);
+            // 通过 WM 协议追加状态（直接改属性对受管窗口无效）。
+            const Atom wmState = XInternAtom(display, "_NET_WM_STATE", False);
+            const Atom above = XInternAtom(display, "_NET_WM_STATE_ABOVE", False);
+            const Atom fullscreen =
+                XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+            if (wmState != None && above != None) {
+                XEvent event{};
+                event.xclient.type = ClientMessage;
+                event.xclient.window = window;
+                event.xclient.message_type = wmState;
+                event.xclient.format = 32;
+                // 1 = _NET_WM_STATE_ADD
+                event.xclient.data.l[0] = 1;
+                event.xclient.data.l[1] = static_cast<long>(above);
+                event.xclient.data.l[2] = static_cast<long>(fullscreen);
+                event.xclient.data.l[3] = 2;  // 来源：普通应用
+                XSendEvent(display, DefaultRootWindow(display), False,
+                           SubstructureRedirectMask | SubstructureNotifyMask,
+                           &event);
+                XFlush(display);
+            }
+            XSetInputFocus(display, window, RevertToParent, CurrentTime);
+            XFlush(display);
+            ok = true;
+        }
+        XCloseDisplay(display);
+        return ok;
+#else
+        (void)nativeWindow;
+        return false;
 #endif
     }
 

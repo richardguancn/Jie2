@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」macOS 打包脚本（M7）
+# 「J2」macOS 打包脚本（M7）
 #
 # 产出：dist/jie2-<版本>-macos-<架构>.zip
 # 内容：jie2.app（含 GUI 与内嵌的 Qt 依赖路径处理）

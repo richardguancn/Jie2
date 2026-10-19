@@ -4,7 +4,7 @@
 
 #include "core/image_buffer.h"
 
-// 「截2」平台层 — Wayland 截图门户（xdg-desktop-portal Screenshot）
+// 「J2」平台层 — Wayland 截图门户（xdg-desktop-portal Screenshot）
 //
 // 与 GlobalShortcuts（wayland_portal.h）不同，截图是**一次性请求-响应**：
 //   调用 Screenshot → 等 Response → 读回 PNG 文件 → 解码 → 释放连接。

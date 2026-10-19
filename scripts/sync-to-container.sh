@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」把工作区源码/脚本同步进验证容器
+# 「J2」把工作区源码/脚本同步进验证容器
 #
 # 为什么需要它：
 #   Docker Desktop for macOS 的 bind mount 在**原子替换**（写临时文件再 rename，

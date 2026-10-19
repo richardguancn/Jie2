@@ -1,4 +1,4 @@
-# 「截2」单元测试
+# 「J2」单元测试
 #
 # 只测 core（图像内核）：它不依赖 Qt 与平台 API，因此测试可在任何环境运行。
 # 平台层的行为验证走 src/tools 下的 jie2-probe。
@@ -24,6 +24,7 @@ if(TARGET Qt6::Widgets)
         add_executable(jie2_ui_alignment_tests
             ui_alignment_tests.cpp
             ../assets/brand/brand.qrc
+            ../src/ui/app_paths.cpp
             ../src/ui/selection_overlay.cpp
             ../src/ui/annotation_render.cpp
             ../src/ui/clothesline.cpp
@@ -32,6 +33,7 @@ if(TARGET Qt6::Widgets)
             ../src/ui/tray.cpp
             ../src/ui/theme.cpp
             ../src/ui/ocr_runner.cpp
+            ../src/ui/settings_dialog.cpp
             ../src/ui/single_instance.cpp
         )
         target_include_directories(jie2_ui_alignment_tests PRIVATE ../src)
@@ -41,4 +43,10 @@ if(TARGET Qt6::Widgets)
         set_tests_properties(ui_alignment_tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endif()
+endif()
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME windows_dependencies_tests
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/windows_dependencies_tests.py")
 endif()

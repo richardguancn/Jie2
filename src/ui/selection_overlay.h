@@ -34,6 +34,10 @@ struct SelectionOverlayOptions {
     bool selectImage = false;  // 衣架标注：居中显示并选中整张图片
     bool darkTheme = true;      // 主题（v2.6：跟随系统）
     bool eraserUndoable = true; // 橡皮擦删除可撤销（v2.6：可禁用二次编辑）
+    /// 把遮罩窗口提升到能盖住全屏应用 / 远程桌面客户端的层级，
+    /// 并让它拿到键盘焦点。参数是原生窗口句柄，返回是否已施加提升动作。
+    /// 由调用方注入（UI 层不能直接依赖 platform 层）。
+    std::function<bool(void* nativeWindow)> promoteWindow;
 };
 
 /// 截图选择遮罩（M1）。
@@ -100,7 +104,10 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    /// 交给平台层把遮罩提到可覆盖全屏/远程桌面窗口的层级并抢焦点。
+    void promoteToFront();
     /// 拦截文字输入框的 Esc（取消输入而不关闭整个遮罩）。
+    bool event(QEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -130,6 +137,8 @@ private:
     void showToolMenu(int index, const QPoint& globalPos);
     std::array<QPoint, 8> cropHandles() const;
     int cropHandleAt(const QPoint& pos) const;
+    /// 手柄序号 → 悬停/拖动时的调整光标（0 TL, 1 上中, 2 TR, 3 右中, 4 BR, …）。
+    static Qt::CursorShape cursorForCropHandle(int handle);
     void updateCropGesture(const QPoint& pos);
     QRect toolbarRect(const QRect& selection) const;
     QRect toolbarButtonRect(const QRect& selection, int index) const;
@@ -198,6 +207,8 @@ private:
     QStringList historyPaths_;  // 旧的在前
     int historyIndex_ = -1;     // -1 = 当前抓屏画面；>=0 = 历史索引
     RecaptureFn recapture_;
+    /// 窗口层级提升回调（平台层实现，见 SelectionOverlayOptions）。
+    std::function<bool(void*)> promoteWindow_;
 
     bool dragging_ = false;
     bool hasSelection_ = false;

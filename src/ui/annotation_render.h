@@ -7,7 +7,7 @@
 
 #include "core/annotation.h"
 
-// 「截2」UI 层 — 标注渲染（M2）
+// 「J2」UI 层 — 标注渲染（M2）
 //
 // 分工：
 //   - 矢量标注（矩形/椭圆/箭头/铅笔/马克笔）用 QPainter 画，

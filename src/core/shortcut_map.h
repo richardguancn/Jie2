@@ -6,15 +6,13 @@
 
 #include "core/config.h"
 
-// 「截2」应用内快捷键映射（专业版对齐项 v2.11.3：自定义部分应用内快捷键）
+// 「J2」应用内快捷键映射（专业版对齐项 v2.11.3：自定义部分应用内快捷键）
 //
 // 设计说明：
-//   - 纯 C++、不依赖 Qt（core 层的约定）；键值以 ASCII 表示
-//     （'A'..'Z' / '0'..'9'），恰好与 Qt::Key 的取值一致，
+//   - 纯 C++、不依赖 Qt（core 层的约定）；键值与 Qt::Key 一致（包含功能键、方向键与符号键），
 //     UI 层直接传 event->key() 即可，不需要两张映射表。
 //   - 配置格式："t"、"shift+b"、"ctrl+alt+p"；"none" 或空串 = 禁用该动作。
-//   - 只覆盖"字母键类"应用内快捷键（工具切换、样式开关）——
-//     数字键选工具、滚轮调粗细等属于固定交互，不在此列（"部分快捷键"）。
+//   - 用户设置的工具快捷键优先于同键的固定操作。
 
 namespace jie2::core {
 
@@ -28,7 +26,7 @@ enum ShortcutModifier : unsigned {
 
 /// 一次按键绑定。
 struct ShortcutSpec {
-    int key = 0;               // ASCII；0 = 未绑定（该动作键盘快捷键禁用）
+    int key = 0;               // Qt-compatible key；0 = 未绑定（该动作键盘快捷键禁用）
     unsigned modifiers = 0;    // ShortcutModifier 位组合
 
     bool enabled() const { return key != 0; }

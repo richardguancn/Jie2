@@ -1,4 +1,4 @@
-// 「截2」图像内核单元测试
+// 「J2」图像内核单元测试
 // 不依赖 Qt 与平台 API，可在任何环境（含无桌面会话的 CI 容器）运行。
 
 #include <algorithm>
@@ -828,7 +828,12 @@ void testShortcutMap() {
     CHECK(!spec.enabled());
     CHECK(!parseShortcutSpec("shift+", &spec));
     CHECK(!parseShortcutSpec("ab", &spec));
-    CHECK(!parseShortcutSpec("f13", &spec));
+    CHECK(parseShortcutSpec("f13", &spec));
+    CHECK(spec.key == 0x0100003c);
+    CHECK(parseShortcutSpec("left", &spec));
+    CHECK(spec.key == 0x01000012);
+    CHECK(parseShortcutSpec("plus", &spec));
+    CHECK(spec.key == 43);
 
     const ShortcutMap defaults = ShortcutMap::defaults();
     CHECK(defaults.matches("tool.text", 'T', 0));

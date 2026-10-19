@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Linux aarch64 验证脚本
+# 「J2」Linux aarch64 验证脚本
 #
 # 在 Linux ARM64 容器内构建并验证三层结构：
 #   - 构建 core / platform / tools / tests（+ Qt UI 层，若依赖可装）

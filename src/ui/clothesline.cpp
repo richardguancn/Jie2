@@ -75,7 +75,7 @@ const QImage& cardShadow(const QSize& size, bool hovered) {
 } // namespace
 
 Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
-    setWindowTitle(QStringLiteral("截2 衣架"));
+    setWindowTitle(QStringLiteral("J2 衣架"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::Tool |
                    Qt::NoDropShadowWindowHint);

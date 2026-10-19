@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」AppImage 打包（简化自解压格式）
+# 「J2」AppImage 打包（简化自解压格式）
 #
 # 设计说明（为什么不是标准 type-2 AppImage）：
 #   标准 AppImage 需要 appimagetool + 预编译 runtime，运行时依赖 FUSE
@@ -50,7 +50,7 @@ cat > "$APP_DIR/jie2.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=截2
+Name=J2
 Name[en]=Jie2
 Comment=截图 / 标注 / 贴图工具
 Comment[en]=Screenshot, annotate and pin tool
@@ -69,7 +69,7 @@ cp "$APP_DIR/usr/share/icons/hicolor/256x256/apps/jie2.png" "$APP_DIR/jie2.png"
 
 cat > "$APP_DIR/AppRun" <<'EOF'
 #!/bin/sh
-# 「截2」AppImage 入口
+# 「J2」AppImage 入口
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
 
@@ -82,7 +82,7 @@ for lib in libQt6Widgets.so.6 libQt6Gui.so.6 libQt6Core.so.6 libX11.so.6; do
     fi
 done
 if [ -n "$missing" ]; then
-    echo "截2 需要宿主提供以下运行库（AppImage 不捆绑 Qt）：" >&2
+    echo "J2 需要宿主提供以下运行库（AppImage 不捆绑 Qt）：" >&2
     echo "  缺失:$missing" >&2
     echo >&2
     echo "Debian/Ubuntu（含麒麟/统信等衍生版）：" >&2
@@ -103,7 +103,7 @@ trap 'rm -f "$HEADER" "$ARCHIVE"' EXIT
 
 cat > "$HEADER" <<'EOF'
 #!/bin/sh
-# 「截2」自解压单文件：运行到临时目录后执行（不需要 root / 不需要安装）
+# 「J2」自解压单文件：运行到临时目录后执行（不需要 root / 不需要安装）
 set -eu
 TMP="$(mktemp -d)"
 trap "rm -rf \"$TMP\"" EXIT

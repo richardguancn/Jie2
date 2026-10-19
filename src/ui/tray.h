@@ -7,9 +7,13 @@
 #include <QString>
 #include <QSystemTrayIcon>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <QSet>
+#include <QStringList>
 
 #include "core/capability.h"
 #include "core/capture_history.h"
@@ -20,6 +24,7 @@
 #include "ui/pin_window.h"  // PinWindow::DismissAction（Esc 行为配置）
 
 class QAction;
+class QFileSystemWatcher;
 class QMenu;
 class QProcess;
 class QScreen;
@@ -126,6 +131,10 @@ public:
     };
     void setCaptureOverrides(const CaptureOverrides& overrides);
 
+    /// 构造"遮罩窗口层级提升"回调（注入 SelectionOverlay::Options）。
+    /// 平台层负责把窗口提到能盖住全屏应用与远程桌面客户端的层级。
+    std::function<bool(void*)> makeOverlayPromoter();
+
     /// 白板模式（M6）：不抓屏，用纯色画布打开标注遮罩，保存标注结果。
     /// 对齐 Snipaste 的 `whiteboard` 命令：用于纯演示/画图场景。
     /// 用户取消时返回空路径且 error 为空。
@@ -142,12 +151,18 @@ private:
     friend class UiAlignmentTest;
     void rebuildMenu();
     void showCapabilities();
+    void showSettings();
+    void triggerTranslation();
+    bool serviceInProgress_ = false;
+    bool settingsOpen_ = false;
     void registerHotkey();
     void handleHotkey(const std::string& id);
     void triggerCapture();
     void note(const QString& title, const QString& body, bool warning = false);
     void loadConfig();
     void saveConfig();
+    /// 按平台出厂默认填好三个全局快捷键（loadConfig 在读配置前调用）。
+    void applyDefaultGlobalHotkeys();
 
     /// 触发角（M1）：屏幕角落停留触发截图。
     void setupTriggerCorner();
@@ -232,6 +247,23 @@ private:
     QByteArray lastClipboardDigest_;   // 去重：同一图像不重复挂
     bool clipboardProcessing_ = false; // 防重入（监听处理期间不再进入）
 
+    // ---- 系统截图监听（macOS Cmd+Shift+4 / Windows Win+Shift+S / GNOME 截图）----
+    //
+    // 系统自带截图工具不经过本程序：macOS 的 Cmd+Shift+4 默认**直接存文件**
+    // （进桌面或用户自定义目录），只有加 Ctrl 才进剪贴板。所以只靠剪贴板
+    // 监听拿不到这类截图 —— 必须同时监听系统截图的落盘目录。
+    bool systemCaptureWatchEnabled_ = true;
+    QFileSystemWatcher* systemCaptureWatcher_ = nullptr;
+    QTimer* systemCaptureScanTimer_ = nullptr;
+    QSet<QString> knownSystemCaptures_;   // 启动时已有 / 已处理过的文件
+    void setupSystemCaptureWatcher();
+    void rescanSystemCaptures(bool initial);
+    /// 候选目录：系统截图的常见落盘位置（已去掉本程序自己的截图目录）。
+    static QStringList systemCaptureDirectories();
+    /// 文件名是否像系统截图工具产出的（含本地化名称），用来避免把
+    /// 用户随手放到桌面的图片误挂上衣架。
+    static bool looksLikeSystemCapture(const QString& fileName);
+
     // ---- Wayland 顶部条（B 项）----
     bool waylandLineEnabled_ = false;
     QProcess* lineProcess_ = nullptr;
@@ -244,7 +276,19 @@ private:
     std::string pinHotkeyId_;
     bool pinHotkeyRegistered_ = false;
     QString pinHotkeyError_;
-    bool saveClipboardHotkeyRegistered_ = false;  // Ctrl+Alt+C（专业版 v2.5）
+    bool saveClipboardHotkeyRegistered_ = false;  // 保存剪贴板图像（专业版 v2.5）
+
+    // ---- 全局快捷键（可自定义：设置 → 快捷键 → 全局快捷键）----
+    // 文本形式（"cmd+alt+t"）原样持久化；解析结果用于注册。
+    // macOS 默认用 Cmd 代替 Ctrl（跨平台习惯差异）。
+    platform::HotkeySpec snipHotkeySpec_{};
+    platform::HotkeySpec pinHotkeySpec_{};
+    platform::HotkeySpec saveClipboardHotkeySpec_{};
+    QString snipHotkeyText_;
+    QString pinHotkeyText_;
+    QString saveClipboardHotkeyText_;
+    /// 遮罩层级提升失败是否已提示过（Wayland 等会话只提示一次）。
+    bool overlayPromoteWarned_ = false;
 
     // 贴图 Esc 行为（专业版 v2.8：可自定义 Esc / Shift+Esc 的功能）。
     // 从配置 pin.esc_action / pin.shift_esc_action 读取（close|hide）。

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」Wayland 截图门户（Screenshot）端到端验证
+# 「J2」Wayland 截图门户（Screenshot）端到端验证
 #
 # 场景（dbus-run-session 私有总线 + mock 门户）：
 #   A. 全屏截图：门户返回 64x48 PNG（5 种行滤波轮转）→

@@ -1,4 +1,22 @@
 #include <QtTest>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QLineEdit>
+#include <QLabel>
+#include <QComboBox>
+#include <QSpinBox>
+#include <QDialogButtonBox>
+#include <QPushButton>
+#include <QStackedWidget>
+#include <QListWidget>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QCheckBox>
+#include "ui/settings_dialog.h"
+#include "ui/ocr_runner.h"
 #include <QSignalSpy>
 #include <QClipboard>
 #include <QTemporaryDir>
@@ -9,6 +27,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QScopeGuard>
+#include "platform/hotkey.h"
 #include "ui/tray.h"
 #include "ui/clothesline.h"
 #include "ui/pin_window.h"
@@ -53,6 +72,440 @@ private slots:
     void initTestCase() {
         const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
         if (!folder.isEmpty()) QVERIFY(QDir().mkpath(folder));
+    }
+    // 全局快捷键文本解析（设置里可自定义；macOS 用 cmd 代替 ctrl）。
+    void globalHotkeyParsing() {
+        using namespace jie2::platform;
+        HotkeySpec spec;
+        QVERIFY(parseHotkeyText("ctrl+alt+t", &spec));
+        QCOMPARE(spec.modifiers, unsigned(kModCtrl | kModAlt));
+        QCOMPARE(spec.key, Key::T);
+        // macOS 习惯写法：cmd 落在 Super 位。
+        QVERIFY(parseHotkeyText("cmd+shift+4", &spec));
+        QCOMPARE(spec.modifiers, unsigned(kModSuper | kModShift));
+        QCOMPARE(spec.key, Key::Num4);
+        // 同一修饰键的所有通用叫法都要接受（跨平台配置可复用）。
+        for (const char* name : {"cmd", "command", "super", "win", "meta"}) {
+            const std::string text = std::string(name) + "+p";
+            QVERIFY2(parseHotkeyText(text, &spec), text.c_str());
+            QCOMPARE(spec.modifiers, unsigned(kModSuper));
+            QCOMPARE(spec.key, Key::P);
+        }
+        QVERIFY(parseHotkeyText("control+option+c", &spec));
+        QCOMPARE(spec.modifiers, unsigned(kModCtrl | kModAlt));
+        QVERIFY(parseHotkeyText("  Ctrl + Alt + T ", &spec));
+        QCOMPARE(spec.key, Key::T);
+        QVERIFY(parseHotkeyText("ctrl+f12", &spec));
+        QCOMPARE(spec.key, Key::F12);
+        QVERIFY(parseHotkeyText("ctrl+f13", &spec));
+        QVERIFY(parseHotkeyText("f20", &spec));
+        QVERIFY(parseHotkeyText("space", &spec));
+        QVERIFY(parseHotkeyText("alt+left", &spec));
+        QVERIFY(!parseHotkeyText("f36", &spec));
+        // 非法输入必须失败（不能解析出一个"看似可用"的组合）。
+        QVERIFY(!parseHotkeyText("", &spec));
+        QVERIFY(parseHotkeyText("t", &spec));
+        QCOMPARE(spec.modifiers, 0u);
+        QVERIFY(!parseHotkeyText("ctrl", &spec));          // 缺主键
+        QVERIFY(!parseHotkeyText("ctrl+alt+t+p", &spec));  // 两个主键
+        QVERIFY(!parseHotkeyText("ctrl+ctrl+t", &spec));   // 重复修饰键
+        QVERIFY(!parseHotkeyText("hyper+t", &spec));       // 未知修饰键
+        // 默认值必须可解析，且 macOS 默认用 Command 而不是 Ctrl。
+        QVERIFY(parseHotkeyText(defaultHotkeyText('t'), &spec));
+        QCOMPARE(spec.key, Key::T);
+#ifdef Q_OS_MACOS
+        QCOMPARE(spec.modifiers, unsigned(kModSuper | kModAlt));
+        QVERIFY(QString::fromStdString(displayHotkey(spec)).contains("Cmd"));
+#else
+        QCOMPARE(spec.modifiers, unsigned(kModCtrl | kModAlt));
+#endif
+    }
+    // 设置界面必须能改全局快捷键，且写错格式要有提示、不静默保存。
+    void globalHotkeysEditableInSettings() {
+        core::Config original;
+        SettingsDialog dialog(original);
+        auto field = [&](const char* name) { return dialog.findChild<QLineEdit*>(name); };
+        QVERIFY(field("hotkey.snip") != nullptr);
+        QVERIFY(field("hotkey.pin") != nullptr);
+        QVERIFY(field("hotkey.save_clipboard") != nullptr);
+        // 默认值按平台给（macOS = cmd+alt+…）。
+        QVERIFY(field("hotkey.snip")->text().contains("alt"));
+        field("hotkey.snip")->setText("cmd+shift+9");
+        QCOMPARE(dialog.configuration().get("hotkey.snip"), std::string("cmd+shift+9"));
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+        dialog.show();
+        auto* save = buttons->button(QDialogButtonBox::Save);
+        // 非法格式：对话框不得接受（停留在对话框并给出错误提示）。
+        field("hotkey.snip")->setText("invalid");
+        QTest::mouseClick(save, Qt::LeftButton);
+        QVERIFY(dialog.isVisible());
+        QCOMPARE(dialog.result(), int(QDialog::Rejected));
+        QVERIFY(dialog.findChild<QLabel*>("settingsError")->isVisible());
+        // 三个动作用同一组合：也不得接受（系统层面只能注册一次）。
+        field("hotkey.snip")->setText("cmd+alt+t");
+        field("hotkey.pin")->setText("cmd+alt+t");
+        QTest::mouseClick(save, Qt::LeftButton);
+        QVERIFY(dialog.isVisible());
+        QCOMPARE(dialog.result(), int(QDialog::Rejected));
+    }
+    void shortcutsRecordSaveAndUse() {
+        SettingsDialog dialog({});
+        dialog.show();
+        dialog.findChild<QListWidget*>("settingsNavigation")->setCurrentRow(3);
+        auto* field = dialog.findChild<QLineEdit*>("hotkey.snip");
+        QTest::mouseClick(field, Qt::LeftButton);
+        QTest::keyClick(field, Qt::Key_F8);
+        QCOMPARE(field->text(), QString("f8"));
+        for (const auto key : {Qt::Key_Space, Qt::Key_Left, Qt::Key_Tab,
+                               Qt::Key_Return, Qt::Key_Escape, Qt::Key_Backspace,
+                               Qt::Key_Delete, Qt::Key_Comma, Qt::Key_F20}) {
+            QTest::keyClick(field, key);
+            platform::HotkeySpec parsed;
+            QVERIFY(platform::parseHotkeyText(field->text().toStdString(), &parsed));
+            QCOMPARE(parsed.modifiers, 0u);
+            QVERIFY(dialog.isVisible());
+        }
+        QTest::keyClick(field, Qt::Key_F8, Qt::AltModifier);
+        QCOMPARE(field->text(), QString("alt+f8"));
+        QTest::keyClick(field, Qt::Key_Plus, Qt::ShiftModifier);
+        QCOMPARE(field->text(), QString("shift+equal"));
+#ifdef Q_OS_MACOS
+        QTest::keyClick(field, Qt::Key_K, Qt::ControlModifier);
+        QCOMPARE(field->text(), QString("cmd+k"));
+        QTest::keyClick(field, Qt::Key_K, Qt::MetaModifier);
+        QCOMPARE(field->text(), QString("ctrl+k"));
+#endif
+        QTest::keyClick(field, Qt::Key_F8);
+        auto* local = dialog.findChild<QLineEdit*>("shortcut.tool.text");
+        QTest::keyClick(local, Qt::Key_Left);
+        QCOMPARE(local->text(), QString("left"));
+        QTemporaryDir temp;
+        QTest::mouseClick(dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        QString error;
+        QVERIFY(SettingsDialog::writeConfig(temp.filePath("settings.conf"), dialog.configuration(), &error));
+        const auto stored = SettingsDialog::readConfig(temp.filePath("settings.conf"));
+        SettingsDialog reopened(stored);
+        QCOMPARE(reopened.findChild<QLineEdit*>("hotkey.snip")->text(), QString("f8"));
+        SelectionOverlay::Options options;
+        options.shortcuts = core::ShortcutMap::fromConfig(stored, nullptr);
+        QPixmap image(320, 240); image.fill(Qt::white);
+        SelectionOverlay overlay(image, 1, nullptr, options);
+        overlay.show();
+        QTest::keyClick(&overlay, Qt::Key_Left);
+        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+        QVERIFY(overlay.isVisible());
+        core::ShortcutSpec tab; QVERIFY(core::parseShortcutSpec("tab", &tab));
+        overlay.shortcuts_.set("tool.text", tab);
+        overlay.currentTool_ = core::AnnotationTool::Arrow;
+        QTest::keyClick(&overlay, Qt::Key_Tab);
+        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+        local->actions().first()->trigger();
+        QCOMPARE(local->text(), QString("none"));
+        // 数字不应被旧的固定工具选择提前吃掉。
+        core::ShortcutSpec digit; QVERIFY(core::parseShortcutSpec("3", &digit));
+        overlay.shortcuts_.set("tool.text", digit);
+        QTest::keyClick(&overlay, Qt::Key_3);
+        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+    }
+    void simplifiedSettings() {
+        SettingsDialog dialog({}); dialog.show();
+        QVERIFY(!dialog.findChild<QSpinBox*>("ocr.timeout_ms"));
+        QVERIFY(!dialog.findChild<QSpinBox*>("translation.timeout_ms"));
+        auto* nav = dialog.findChild<QListWidget*>("settingsNavigation");
+        nav->setCurrentRow(1);
+        auto* radius = dialog.findChild<QSpinBox*>("output.round.radius");
+        QVERIFY(!radius->isVisible());
+        auto* round = dialog.findChild<QCheckBox*>("output.round.enabled");
+        QTest::mouseClick(round, Qt::LeftButton);
+        QVERIFY(radius->isVisible());
+        radius->setValue(36);
+        QTest::mouseClick(round, Qt::LeftButton);
+        QVERIFY(!radius->isVisible());
+        QCOMPARE(dialog.configuration().getInt("output.round.radius"), 36);
+    }
+
+    // 遮罩显示时必须请求平台层提升层级（远程桌面 / 全屏窗口场景）：
+    // 不提升的话，用户表现为"按了热键非要先切一下窗口才看到遮罩"。
+    void overlayRequestsWindowPromotion() {
+        QPixmap image(320, 240); image.fill(Qt::white);
+        int calls = 0;
+        void* lastHandle = nullptr;
+        SelectionOverlay::Options options;
+        options.promoteWindow = [&](void* handle) {
+            ++calls;
+            lastHandle = handle;
+            return true;
+        };
+        SelectionOverlay overlay(image, 1, nullptr, options);
+        overlay.show();
+        QCoreApplication::processEvents();
+        // showEvent 里同步调一次 + 下一轮事件循环再补一次（焦点建立较晚）。
+        QTRY_VERIFY_WITH_TIMEOUT(calls >= 2, 2000);
+        QVERIFY(lastHandle != nullptr);  // 句柄必须有效，否则平台层无法定位窗口
+    }
+    // 系统截图（macOS Cmd+Shift+4 等）直接落盘：必须自动挂上衣架。
+    void systemCaptureHangsOnClothesline() {
+        QTemporaryDir shots;
+        QVERIFY(shots.isValid());
+        qputenv("JIE2_SYSTEM_CAPTURE_DIRS", shots.path().toLocal8Bit());
+        const auto restoreEnv = qScopeGuard([] {
+            qunsetenv("JIE2_SYSTEM_CAPTURE_DIRS");
+        });
+        // 启动前就存在的历史截图（模拟用户桌面上早就有的图）。
+        const QString oldShot = shots.filePath("Screenshot 2020-01-01 at 09.00.00.png");
+        {
+            QImage image(40, 30, QImage::Format_ARGB32);
+            image.fill(Qt::darkGreen);
+            QVERIFY(image.save(oldShot));
+        }
+        QTemporaryDir temp;
+        auto platform = std::make_unique<MenuTestPlatform>();
+        TrayController controller(std::move(platform));
+        controller.configPath_ = temp.filePath("config");
+        controller.clotheslineEnabled_ = false;
+        controller.clipboardWatchEnabled_ = false;
+        controller.triggerEnabled_ = false;
+        controller.setupTriggerCorner();
+        const auto initialHistoryCount = controller.history_.entries().size();
+        QVERIFY(controller.start());
+        QVERIFY(controller.systemCaptureWatcher_ != nullptr);
+        // 配置文件不存在时也必须拿到可用的默认全局快捷键
+        // （回归点：默认值曾因 loadConfig 提前 return 而留成空规格）。
+        QCOMPARE(controller.snipHotkeySpec_.key, platform::Key::T);
+        QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModAlt) != 0);
+#ifdef Q_OS_MACOS
+        QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModSuper) != 0);
+#else
+        QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModCtrl) != 0);
+#endif
+        // 启动时的扫描只登记、不挂载：旧截图不能一次性被搬上衣架。
+        QCOMPARE(controller.history_.entries().size(), initialHistoryCount);
+        // 非截图命名的普通图片也不该被自动挂载。
+        const QString notAShot = shots.filePath("holiday.png");
+        {
+            QImage image(40, 30, QImage::Format_ARGB32);
+            image.fill(Qt::darkBlue);
+            QVERIFY(image.save(notAShot));
+        }
+        const std::size_t before = controller.history_.entries().size();
+        // 模拟系统刚截好一张图（macOS 中文名 / 英文名都要认）。
+        const QString newShot = shots.filePath("Screen Shot 2026-02-02 at 10.11.12.png");
+        {
+            QImage image(64, 48, QImage::Format_ARGB32);
+            image.fill(Qt::darkRed);
+            QVERIFY(image.save(newShot));
+        }
+        // 目录事件 + 300ms 去抖后由定时器扫描。
+        QTRY_VERIFY_WITH_TIMEOUT(controller.history_.entries().size() > before, 5000);
+        QCOMPARE(controller.history_.entries().back().path, newShot.toStdString());
+        QCOMPARE(controller.history_.entries().back().width, 64);
+        // 旧截图与普通图片都没被挂上。
+        for (const auto& entry : controller.history_.entries()) {
+            QVERIFY(entry.path != oldShot.toStdString());
+            QVERIFY(entry.path != notAShot.toStdString());
+        }
+    }
+    // 系统截图文件名识别：本地化名称与英文名称都要认，普通图片不能误认。
+    void systemCaptureNameDetection() {
+        QVERIFY(TrayController::looksLikeSystemCapture("Screen Shot 2026-02-02 at 10.11.12.png"));
+        QVERIFY(TrayController::looksLikeSystemCapture("Screenshot 2026-02-02 101112.png"));
+        QVERIFY(TrayController::looksLikeSystemCapture("截屏2026-02-02 10.11.12.png"));
+        QVERIFY(TrayController::looksLikeSystemCapture("屏幕快照 2026-02-02 上午10.11.12.png"));
+        QVERIFY(TrayController::looksLikeSystemCapture("Screenshot (3).png"));
+        QVERIFY(!TrayController::looksLikeSystemCapture("holiday.png"));
+        QVERIFY(!TrayController::looksLikeSystemCapture("IMG_0001.png"));
+    }
+    void settingsSaveReloadAndCancel() {
+        QTemporaryDir temp;
+        core::Config original;
+        original.set("custom.keep", "preserved");
+        original.set("shortcut.tool.text", "alt+t");
+        SettingsDialog dialog(original);
+        QCOMPARE(dialog.findChild<QStackedWidget*>("settingsPages")->count(), 6);
+        auto field = [&](const char* name) { return dialog.findChild<QLineEdit*>(name); };
+        field("ocr.endpoint")->setText("https://example.invalid/v1");
+        field("ocr.model")->setText("vision-model");
+        field("ocr.api_key")->setText("test-key-not-real");
+        QCOMPARE(field("ocr.api_key")->echoMode(), QLineEdit::Password);
+        field("translation.endpoint")->setText("https://translate.invalid/v1/chat/completions");
+        field("translation.model")->setText("translate-model");
+        field("translation.target_language")->setText("英语");
+        dialog.findChild<QSpinBox*>("output.round.radius")->setValue(24);
+        dialog.findChild<QComboBox*>("pin.esc_action")->setCurrentIndex(1);
+        dialog.show(); QTest::qWait(30);
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+        QTest::mouseClick(buttons->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        const QString path = temp.filePath("nested/jie2.conf");
+        QString error;
+        QVERIFY2(SettingsDialog::writeConfig(path, dialog.configuration(), &error), qPrintable(error));
+        auto stored = SettingsDialog::readConfig(path);
+        QCOMPARE(stored.get("ocr.api_key"), std::string("test-key-not-real"));
+        QCOMPARE(stored.get("ocr.backend"), std::string("openai-compatible"));
+        QCOMPARE(stored.get("custom.keep"), std::string("preserved"));
+        QCOMPARE(stored.get("translation.target_language"), std::string("英语"));
+        {
+            TrayController controller(std::make_unique<MenuTestPlatform>());
+            controller.configPath_ = path;
+            controller.loadConfig();
+            QCOMPARE(controller.roundRadius_, 24);
+            QCOMPARE(controller.pinEscAction_, PinWindow::DismissAction::Hide);
+            controller.saveConfig(); // 菜单开关、截图计数与退出不能擦掉服务设置。
+        }
+        stored = SettingsDialog::readConfig(path);
+        QCOMPARE(stored.get("ocr.api_key"), std::string("test-key-not-real"));
+        QCOMPARE(stored.get("translation.model"), std::string("translate-model"));
+        QCOMPARE(stored.get("shortcut.tool.text"), std::string("alt+t"));
+        SettingsDialog reopened(stored);
+        QCOMPARE(reopened.findChild<QLineEdit*>("ocr.model")->text(), QString("vision-model"));
+        reopened.findChild<QLineEdit*>("ocr.api_key")->clear();
+        reopened.reject();
+        QCOMPARE(SettingsDialog::readConfig(path).get("ocr.api_key"), std::string("test-key-not-real"));
+        QVERIFY(!SettingsDialog::writeConfig(temp.path(), stored, &error));
+#ifndef Q_OS_WIN
+        const auto permissions = QFileInfo(path).permissions();
+        QVERIFY(!(permissions & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther)));
+#endif
+    }
+    void settingsApplyImmediately() {
+        QTemporaryDir temp;
+        TrayController controller(std::make_unique<MenuTestPlatform>());
+        controller.configPath_ = temp.filePath("jie2.conf");
+        QTimer::singleShot(50, [&] {
+            auto* dialog = dynamic_cast<SettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->findChild<QLineEdit*>("ocr.endpoint")->setText("https://example.invalid/v1");
+            dialog->findChild<QLineEdit*>("ocr.model")->setText("new-model");
+            dialog->findChild<QLineEdit*>("ocr.api_key")->setText("fake-secret");
+            dialog->findChild<QLineEdit*>("shortcut.tool.text")->setText("alt+t");
+            dialog->findChild<QSpinBox*>("output.round.radius")->setValue(32);
+            QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save), Qt::LeftButton);
+        });
+        controller.showSettings();
+        QCOMPARE(controller.ocrConfig_.model, std::string("new-model"));
+        QCOMPARE(controller.roundRadius_, 32);
+        QVERIFY(controller.shortcutMap_.matches("tool.text", 'T', core::kScAlt));
+        QTimer::singleShot(50, [&] {
+            auto* dialog = dynamic_cast<SettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->findChild<QLineEdit*>("ocr.model")->setText("cancelled-model");
+            dialog->reject();
+        });
+        controller.showSettings();
+        QCOMPARE(controller.ocrConfig_.model, std::string("new-model"));
+        QCOMPARE(SettingsDialog::readConfig(controller.configPath_).get("ocr.model"), std::string("new-model"));
+    }
+    void settingsValidationAndScreenshots() {
+        SettingsDialog dialog({});
+        auto* pages = dialog.findChild<QStackedWidget*>("settingsPages");
+        auto* nav = dialog.findChild<QListWidget*>("settingsNavigation");
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+        dialog.findChild<QLineEdit*>("ocr.endpoint")->setText("bad-address");
+        dialog.show();
+        QTest::mouseClick(buttons->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QVERIFY(dialog.isVisible());
+        QCOMPARE(dialog.result(), int(QDialog::Rejected));
+        QCOMPARE(pages->currentIndex(), 4); // 出错时自动定位到对应分类。
+        QVERIFY(dialog.findChild<QLabel*>("settingsError")->isVisible());
+        dialog.findChild<QLineEdit*>("ocr.endpoint")->clear();
+        QVERIFY(!dialog.findChild<QLabel*>("settingsError")->isVisible());
+        QVERIFY(!dialog.findChild<QLineEdit*>("ocr.model")->property("invalid").toBool());
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        for (const QString theme : {QString("light"), QString("dark")}) {
+            auto* appearance = dialog.findChild<QComboBox*>("appearance.theme");
+            appearance->setCurrentIndex(appearance->findData(theme));
+            for (const QSize size : {QSize(920, 700), QSize(780, 580)}) {
+                dialog.resize(size); QTest::qWait(30);
+                for (int i = 0; i < pages->count(); ++i) {
+                    const QRect item = nav->visualItemRect(nav->item(i));
+                    QTest::mouseClick(nav->viewport(), Qt::LeftButton, Qt::NoModifier, item.center());
+                    QCOMPARE(pages->currentIndex(), i); QTest::qWait(30);
+                    QVERIFY(dialog.rect().contains(buttons->mapTo(&dialog, buttons->rect().bottomRight())));
+                    auto* scroll = qobject_cast<QScrollArea*>(pages->currentWidget());
+                    QVERIFY(scroll);
+                    QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+                    if (!folder.isEmpty()) QVERIFY(dialog.grab().save(folder + QString("/settings-%1-%2-%3.png").arg(theme).arg(size.width()).arg(i)));
+                }
+            }
+        }
+        nav->setCurrentRow(0); nav->setFocus();
+        QTest::keyClick(nav, Qt::Key_Down); QCOMPARE(pages->currentIndex(), 1);
+        nav->setCurrentRow(4);
+        auto* key = dialog.findChild<QLineEdit*>("ocr.api_key");
+        key->setText("example-key");
+        key->actions().first()->trigger(); QCOMPARE(key->echoMode(), QLineEdit::Normal);
+        key->actions().first()->trigger(); QCOMPARE(key->echoMode(), QLineEdit::Password);
+        nav->setCurrentRow(0);
+        auto* toggle = dialog.findChild<QCheckBox*>("clothesline.enabled");
+        const bool old = toggle->isChecked();
+        QTest::mouseClick(toggle, Qt::LeftButton); QCOMPARE(toggle->isChecked(), !old);
+        toggle->setFocus(); QTest::keyClick(toggle, Qt::Key_Space); QCOMPARE(toggle->isChecked(), old);
+        QTest::mouseClick(buttons->button(QDialogButtonBox::Cancel), Qt::LeftButton);
+        QVERIFY(!dialog.isVisible());
+    }
+    void modelServices_data() {
+        QTest::addColumn<QString>("task"); QTest::addColumn<int>("status");
+        QTest::addColumn<QByteArray>("response"); QTest::addColumn<bool>("success");
+        const QByteArray good = R"({"choices":[{"message":{"content":"HELLO 世界"}}]})";
+        QTest::newRow("ocr") << "ocr" << 200 << good << true;
+        QTest::newRow("auto-uses-model") << "auto" << 200 << good << true;
+        QTest::newRow("translate-text") << "text" << 200 << good << true;
+        QTest::newRow("translate-image") << "image" << 200 << good << true;
+        QTest::newRow("authentication-failure") << "ocr" << 401 << QByteArray("{}") << false;
+        QTest::newRow("malformed-response") << "ocr" << 200 << QByteArray("not-json") << false;
+        QTest::newRow("missing-result") << "ocr" << 200 << QByteArray("{}") << false;
+        QTest::newRow("empty-result") << "ocr" << 200 << QByteArray(R"({"choices":[{"message":{"content":" "}}]})") << false;
+        QTest::newRow("timeout") << "ocr" << 0 << QByteArray() << false;
+    }
+    void modelServices() {
+        QFETCH(QString, task); QFETCH(int, status); QFETCH(QByteArray, response); QFETCH(bool, success);
+        QTcpServer server;
+        QVERIFY2(server.listen(QHostAddress::LocalHost, 0), qPrintable(server.errorString()));
+        QByteArray request;
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto* socket = server.nextPendingConnection();
+            auto data = std::make_shared<QByteArray>();
+            connect(socket, &QTcpSocket::readyRead, socket, [&, socket, data] {
+                data->append(socket->readAll());
+                const int split = data->indexOf("\r\n\r\n");
+                if (split < 0) return;
+                int size = -1;
+                for (const auto& header : data->left(split).split('\n'))
+                    if (header.toLower().startsWith("content-length:")) size = header.mid(15).trimmed().toInt();
+                if (size < 0 || data->size() < split + 4 + size) return;
+                request = *data;
+                if (status == 0) return;
+                socket->write("HTTP/1.1 " + QByteArray::number(status) + " Test\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(response.size()) + "\r\nConnection: close\r\n\r\n" + response);
+                socket->disconnectFromHost();
+            });
+        });
+        core::OcrConfig config;
+        config.endpoint = QString("http://127.0.0.1:%1/v1%2").arg(server.serverPort()).arg(task == "text" ? "/chat/completions" : "/").toStdString();
+        config.model = "test-vision"; config.apiKey = "fake-test-key"; config.timeoutMs = status == 0 ? 80 : 3000;
+        MenuTestPlatform platform;
+        core::ImageBuffer image(20, 10, core::PixelFormat::RGBA8888);
+        QImage picture(20, 10, QImage::Format_RGBA8888); picture.fill(Qt::white);
+        core::OcrResult result;
+        if (task == "text" || task == "image")
+            result = OcrRunner::translate(config, task == "image" ? picture : QImage(), task == "text" ? QString("原文") : QString(), "英语");
+        else {
+            if (task == "auto") config.backend = core::OcrBackendKind::Auto;
+            result = OcrRunner::run(config, image, &platform);
+        }
+        QCOMPARE(result.ok, success);
+        QCOMPARE(platform.recognitions, 0);
+        if (!success) QVERIFY(!result.error.empty());
+        else QCOMPARE(result.text, std::string("HELLO 世界"));
+        QVERIFY(request.startsWith("POST /v1/chat/completions HTTP/1.1"));
+        QVERIFY(request.contains("Authorization: Bearer fake-test-key"));
+        const auto body = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+        QCOMPARE(body["model"].toString(), QString("test-vision"));
+        const auto parts = body["messages"].toArray().first().toObject()["content"].toArray();
+        QCOMPARE(parts.size(), task == "text" ? 1 : 2);
+        if (task == "text") QVERIFY(parts.first().toObject()["text"].toString().contains("原文"));
+        else QVERIFY(parts.last().toObject()["image_url"].toObject()["url"].toString().startsWith("data:image/png;base64,"));
+        if (task == "text" || task == "image") QVERIFY(parts.first().toObject()["text"].toString().contains("英语"));
     }
     void toolbarFits_data() {
         QTest::addColumn<int>("width");
@@ -183,6 +636,32 @@ private slots:
         QTest::mouseRelease(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(210, 210));
         QCOMPARE(overlay.currentSelection(), QRect(130, 130, 240, 160));
         QCOMPARE(overlay.annotations_.size(), size_t(0));
+    }
+    // 选定标注工具后，八手柄仍然可以调整选区（而不是开始画标注）——
+    // 用户反馈"截图时没办法重新调整截图的尺寸"，这里锁定该路径。
+    void cropHandlesWorkAfterToolChosen() {
+        QPixmap image(640, 480); image.fill(Qt::white);
+        SelectionOverlay overlay(image, 1, nullptr);
+        overlay.hasSelection_ = true; overlay.selectionRect_ = QRect(100, 100, 200, 160);
+        overlay.toolChosen_ = true;  // 已选过标注工具
+        overlay.show();
+        // 右下角手柄：右下各扩 30/20，左上角不动。
+        const QPoint handle = overlay.cropHandles()[4];
+        QTest::mousePress(&overlay, Qt::LeftButton, Qt::NoModifier, handle);
+        QTest::mouseMove(&overlay, handle + QPoint(30, 20));
+        QTest::mouseRelease(&overlay, Qt::LeftButton, Qt::NoModifier, handle + QPoint(30, 20));
+        QCOMPARE(overlay.currentSelection(), QRect(100, 100, 230, 180));
+        QCOMPARE(overlay.annotations_.size(), size_t(0));  // 没有误生成标注
+    }
+    // 手柄命中区必须明显大于手柄视觉尺寸（5.5px 半径），否则用户难以发现。
+    void cropHandleHitAreaIsGenerous() {
+        QPixmap image(640, 480); image.fill(Qt::white);
+        SelectionOverlay overlay(image, 1, nullptr);
+        overlay.hasSelection_ = true; overlay.selectionRect_ = QRect(100, 100, 200, 160);
+        const QPoint handle = overlay.cropHandles()[0];
+        // 距手柄中心 12（曼哈顿）仍可命中；30 之外不命中。
+        QCOMPARE(overlay.cropHandleAt(handle + QPoint(7, 5)), 0);
+        QCOMPARE(overlay.cropHandleAt(handle + QPoint(30, 0)), -1);
     }
     void actionButtonsAreDistinct() {
         for (const auto action : {SelectionOverlay::Action::SaveFile,
@@ -608,6 +1087,7 @@ private slots:
         clipboard->setImage(image);
         click("贴图（"); QTRY_COMPARE(controller.pinCount(), 1);
         controller.closeAllPins(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        controller.ocrConfig_.backend = core::OcrBackendKind::System;
         click("文字识别（"); QTRY_COMPARE(backend->recognitions, 1);
         QCOMPARE(clipboard->text(), QString("菜单识别验证"));
         clipboard->clear();
@@ -640,7 +1120,7 @@ private slots:
             // 避免退出应用主循环后影响同进程中的其他测试。
             QTimer::singleShot(0, &controller, [&] {
                 click("截图（");
-                click("退出截2");
+                click("退出J2");
             });
             QCOMPARE(QCoreApplication::exec(), 0);
         } else {
@@ -653,6 +1133,11 @@ private slots:
         QTRY_VERIFY(qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
         auto* capabilityBox = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         QVERIFY(capabilityBox->text().contains("menu-test"));
+        QCOMPARE(capabilityBox->icon(), QMessageBox::Information);
+        QVERIFY(capabilityBox->text().contains("屏幕截图：可用"));
+        QVERIFY(!capabilityBox->text().contains("**"));
+        const QString capabilityFolder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!capabilityFolder.isEmpty()) QVERIFY(capabilityBox->grab().save(capabilityFolder + "/capabilities.png"));
         QTest::keyClick(capabilityBox, Qt::Key_Return);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         open(); QTRY_VERIFY(controller.menu_->isVisible());

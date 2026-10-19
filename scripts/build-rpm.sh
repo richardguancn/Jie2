@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 「截2」RPM 打包脚本（Fedora / RHEL / openEuler 系）
+# 「J2」RPM 打包脚本（Fedora / RHEL / openEuler 系）
 #
 # 产出：jie2-<版本>-1.<架构>.rpm
 # 内容与依赖策略对齐 deb / AppImage：
@@ -54,7 +54,7 @@ else
     cat > "$WORK/SOURCES/payload/jie2.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=截2
+Name=J2
 Comment=截图 / 标注 / 贴图工具
 Exec=jie2
 Icon=jie2

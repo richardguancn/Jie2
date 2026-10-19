@@ -6,7 +6,7 @@
 
 #include "core/geometry.h"
 
-// 「截2」图像内核 — 像素缓冲
+// 「J2」图像内核 — 像素缓冲
 // 约束：不依赖任何 UI 框架，不持有平台句柄。所有算法以此结构为输入输出。
 
 namespace jie2::core {

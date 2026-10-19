@@ -1,4 +1,4 @@
-# 「截2」平台集成层（platform）
+# 「J2」平台集成层（platform）
 #
 # 依赖方向：platform -> core（允许）；platform -> ui（禁止）。
 # 每个平台一个实现文件，共同实现 platform.h 中的接口。

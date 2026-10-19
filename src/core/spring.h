@@ -1,6 +1,6 @@
 #pragma once
 
-// 「截2」动画内核：阻尼弹簧与标准缓动曲线。
+// 「J2」动画内核：阻尼弹簧与标准缓动曲线。
 //
 // 用途：衣架（tendedero 合并）的摆动、挂载掉落、面板滑动等动效。
 // tendedero 用 SwiftUI 动画原语（interpolatingSpring / spring(response:

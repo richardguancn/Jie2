@@ -1,6 +1,10 @@
+#include <QScopeGuard>
 #include "ui/tray.h"
 
+#include "ui/app_paths.h"
 #include "ui/theme.h"
+#include "ui/settings_dialog.h"
+#include <QScopedValueRollback>
 
 #include <algorithm>
 #include <cstdint>
@@ -22,6 +26,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QFileSystemWatcher>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -76,18 +81,17 @@ QIcon makeTrayIcon() {
 }
 
 QString configFilePath() {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(dir);
-    return dir + QStringLiteral("/jie2.conf");
+    return appConfigFile();
+}
+
+/// 全局快捷键的出厂默认值（修饰键按平台习惯，实现在平台层）。
+QString defaultGlobalHotkey(const char* keyName) {
+    return QString::fromStdString(platform::defaultHotkeyText(keyName[0]));
 }
 
 /// 截图历史文件（与配置同目录）。
 QString historyFilePath() {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(dir);
-    return dir + QStringLiteral("/history.txt");
+    return appHistoryFile();
 }
 
 /// 截图保存目录：图片目录下的 jie2 子目录。
@@ -305,6 +309,7 @@ bool TrayController::start() {
                     options.shortcuts = shortcutMap_;
                     options.paletteSize = paletteSize_;
                     options.eraserUndoable = eraserUndoable_;
+                    options.promoteWindow = makeOverlayPromoter();
                     const auto result = SelectionOverlay::run(QPixmap::fromImage(image), 1.0,
                         QGuiApplication::screenAt(QCursor::pos()), options);
                     if (result.accepted && !result.outputImage.isNull()) {
@@ -328,10 +333,13 @@ bool TrayController::start() {
     }
 
     // 剪贴板图片监听（M3 增补）：复制图像自动挂上衣架。
+    // 系统截图（macOS Cmd+Shift+4 等）默认存文件而不进剪贴板，
+    // 所以同时监听系统截图的落盘目录。
     setupClipboardWatcher();
+    setupSystemCaptureWatcher();
 
     tray_ = new QSystemTrayIcon(makeTrayIcon(), this);
-    tray_->setToolTip(QStringLiteral("截2 — %1")
+    tray_->setToolTip(QStringLiteral("J2 — %1")
                           .arg(QString::fromStdString(platform_->name())));
 
     menu_ = new QMenu();
@@ -367,7 +375,7 @@ bool TrayController::start() {
     // 平台能力受限时第一时间如实提示（评估报告 3.2 要求降级对用户可见）。
     if (capabilities_.hasLimitations() && tray_->isSystemTrayAvailable()) {
         tray_->showMessage(
-            QStringLiteral("截2：当前会话能力受限"),
+            QStringLiteral("J2：当前会话能力受限"),
             QString::fromStdString(capabilities_.describe()),
             QSystemTrayIcon::Warning, 8000);
     }
@@ -392,9 +400,11 @@ void TrayController::rebuildMenu() {
 
     // 文字识别（M5）：对剪贴板图像跑 OCR。
     auto* ocrAction = menu_->addAction(
-        QStringLiteral("文字识别（OCR · %1）")
-            .arg(QString::fromStdString(core::toString(ocrConfig_.backend))));
+        QStringLiteral("文字识别（大模型）"));
     connect(ocrAction, &QAction::triggered, this, &TrayController::triggerOcr, Qt::QueuedConnection);
+
+    auto* translateAction = menu_->addAction(QStringLiteral("翻译（剪贴板文字或图片）"));
+    connect(translateAction, &QAction::triggered, this, &TrayController::triggerTranslation, Qt::QueuedConnection);
 
     // 二维码/条形码识别（M6，专业版对齐项 barcode-scan）。
     auto* barcodeAction =
@@ -433,13 +443,19 @@ void TrayController::rebuildMenu() {
                 &TrayController::closeAllPins, Qt::QueuedConnection);
     }
 
+    // 热键状态行：显示**实际生效**的组合（可自定义，故不能写死文本）。
+    const QString snipLabel =
+        QString::fromStdString(platform::displayHotkey(snipHotkeySpec_));
+    const QString pinLabel =
+        QString::fromStdString(platform::displayHotkey(pinHotkeySpec_));
     auto* hotkeyStatus = menu_->addAction(
         hotkeyRegistered_
-            ? QStringLiteral("截图热键：Ctrl+Alt+T%1")
-                  .arg(pinHotkeyRegistered_
-                           ? QStringLiteral(" · 贴图热键：Ctrl+Alt+P")
+            ? QStringLiteral("截图热键：%1%2")
+                  .arg(snipLabel,
+                       pinHotkeyRegistered_
+                           ? QStringLiteral(" · 贴图热键：%1").arg(pinLabel)
                            : QStringLiteral(" · 贴图热键不可用"))
-            : QStringLiteral("全局热键不可用：%1").arg(hotkeyError_));
+            : QStringLiteral("全局热键不可用（%1）：%2").arg(snipLabel, hotkeyError_));
     hotkeyStatus->setEnabled(false);
 
     if (captureCount_ > 0) {
@@ -518,13 +534,16 @@ void TrayController::rebuildMenu() {
 
     menu_->addSeparator();
 
+    auto* settingsAction = menu_->addAction(QStringLiteral("设置…"));
+    connect(settingsAction, &QAction::triggered, this, &TrayController::showSettings, Qt::QueuedConnection);
+
     auto* capabilityAction = menu_->addAction(QStringLiteral("平台能力…"));
     connect(capabilityAction, &QAction::triggered, this,
             &TrayController::showCapabilities, Qt::QueuedConnection);
 
     menu_->addSeparator();
 
-    auto* quitAction = menu_->addAction(QStringLiteral("退出截2"));
+    auto* quitAction = menu_->addAction(QStringLiteral("退出 J2"));
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit, Qt::QueuedConnection);
 }
 
@@ -872,6 +891,7 @@ QString TrayController::captureWithSelection(QString* error) {
     overlayOptions.shortcuts = shortcutMap_;
     overlayOptions.darkTheme = darkTheme_;
     overlayOptions.eraserUndoable = eraserUndoable_;
+    overlayOptions.promoteWindow = makeOverlayPromoter();
 
     const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
         QPixmap::fromImage(image), scale, screen, overlayOptions);
@@ -933,6 +953,7 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
     overlayOptions.shortcuts = shortcutMap_;
     overlayOptions.darkTheme = darkTheme_;
     overlayOptions.eraserUndoable = eraserUndoable_;
+    overlayOptions.promoteWindow = makeOverlayPromoter();
     const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
         QPixmap::fromImage(board), scale, screen, overlayOptions);
     if (!outcome.accepted) {
@@ -952,6 +973,29 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
         pendingFlyRect_ = QRect();
     }
     return path;
+}
+
+std::function<bool(void*)> TrayController::makeOverlayPromoter() {
+    // 遮罩打开前先收起衣架（它本身是置顶窗，可能与遮罩抢层级）。
+    // 返回的回调被遮罩在每次 show 时调用：平台层负责把窗口提到
+    // 能盖住全屏应用 / 远程桌面客户端的层级并抢键盘焦点。
+    std::function<bool(void*)> promoter = [this](void* nativeWindow) {
+        if (!platform_) {
+            return false;
+        }
+        const bool promoted =
+            platform_->promoteOverlayWindow(nativeWindow);
+        // 只提示一次：合成器不支持的会话（如 Wayland）每次截图都会失败，
+        // 反复提示反而噪声。
+        if (!promoted && !overlayPromoteWarned_) {
+            overlayPromoteWarned_ = true;
+            qInfo().noquote() << QStringLiteral(
+                "[jie2] 当前会话无法提升遮罩层级（Wayland 合成器不允许客户端"
+                "自定层级）；若遮罩被全屏或远程桌面窗口盖住，请先退出全屏");
+        }
+        return promoted;
+    };
+    return promoter;
 }
 
 void TrayController::triggerCapture() {
@@ -1145,10 +1189,8 @@ void TrayController::updateWaylandLine() {
         return;
     }
     // 1) 写 items 文件（jie2-line 轮询它的 mtime）。
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(dir);
-    const QString itemsPath = dir + QStringLiteral("/line-items.txt");
+    const QString itemsPath =
+        appDataDirectory() + QStringLiteral("/line-items.txt");
     {
         QFile file(itemsPath);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
@@ -1265,8 +1307,198 @@ void TrayController::setupClipboardWatcher() {
             &TrayController::clipboardChanged);
 }
 
+// ---- 系统截图监听 ----
+//
+// 系统截图工具（macOS Cmd+Shift+4、Windows Win+Shift+S 存盘模式、
+// GNOME/KDE 截图）**不经过本程序**：它们按系统设置把图直接写到磁盘。
+// 只监听剪贴板拿不到这类截图，所以这里再加一路目录监听。
+
+QStringList TrayController::systemCaptureDirectories() {
+    QStringList dirs;
+    // 显式覆盖（多个目录用路径分隔符隔开）：既方便用户把截图存到自定义
+    // 目录后仍能自动挂载，也让这条链路可以被自动化测试驱动。
+    const QString override = QString::fromLocal8Bit(
+        qgetenv("JIE2_SYSTEM_CAPTURE_DIRS"));
+    if (!override.isEmpty()) {
+        const QStringList parts =
+            override.split(QDir::listSeparator(), Qt::SkipEmptyParts);
+        for (const QString& part : parts) {
+            if (QFileInfo(part).isDir()) {
+                dirs << part;
+            }
+        }
+        dirs.removeDuplicates();
+        return dirs;
+    }
+#ifdef Q_OS_MACOS
+    // 系统截图的保存位置由 com.apple.screencapture 的 location 决定，
+    // 用户可能改到任意目录；读不到时按默认的桌面处理。
+    QProcess defaults;
+    defaults.start(QStringLiteral("/usr/bin/defaults"),
+                   {QStringLiteral("read"), QStringLiteral("com.apple.screencapture"),
+                    QStringLiteral("location")});
+    if (defaults.waitForFinished(600) && defaults.exitCode() == 0) {
+        QString location =
+            QString::fromUtf8(defaults.readAllStandardOutput()).trimmed();
+        if (location.startsWith(QLatin1String("~/"))) {
+            location = QDir::homePath() + location.mid(1);
+        }
+        if (QFileInfo(location).isDir()) {
+            dirs << location;
+        }
+    }
+    dirs << QDir::homePath() + QStringLiteral("/Desktop");
+    dirs << QDir::homePath() + QStringLiteral("/Pictures/Screenshots");
+#else
+    const QString pictures =
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString desktop =
+        QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+    if (!pictures.isEmpty()) {
+        dirs << pictures + QStringLiteral("/Screenshots") << pictures;
+    }
+    if (!desktop.isEmpty()) {
+        dirs << desktop;
+    }
+#endif
+    dirs.removeDuplicates();
+    // 去掉本程序自己的截图目录：那批文件已经走 recordCapture，
+    // 再监听一遍会把同一张图挂两次。
+    const QString own = QFileInfo(captureDirectory()).canonicalFilePath();
+    for (int i = dirs.size() - 1; i >= 0; --i) {
+        const QFileInfo info(dirs[i]);
+        if (!info.isDir()) {
+            dirs.removeAt(i);
+            continue;
+        }
+        if (!own.isEmpty() && info.canonicalFilePath() == own) {
+            dirs.removeAt(i);
+        }
+    }
+    return dirs;
+}
+
+bool TrayController::looksLikeSystemCapture(const QString& fileName) {
+    // 系统截图的名字随语言变化（"Screen Shot…" / "Screenshot…" /
+    // "截屏…" / "屏幕快照…" / "Screenshot (3).png"）。这里只做"像不像"
+    // 的宽松判断：不像的文件不自动挂，避免把用户随手放到桌面的图片
+    // 当成截图（误挂比漏挂更烦人）。
+    const QString name = fileName.toLower();
+    static const char* const kMarkers[] = {
+        "screen shot", "screenshot", "screen_shot", "screen-shot",
+        "snip",  // Windows 截图工具
+    };
+    for (const char* marker : kMarkers) {
+        if (name.contains(QLatin1String(marker))) {
+            return true;
+        }
+    }
+    const QStringList chineseMarkers = {QStringLiteral("截屏"),
+                                        QStringLiteral("屏幕快照"),
+                                        QStringLiteral("截图")};
+    for (const QString& marker : chineseMarkers) {
+        if (fileName.contains(marker)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void TrayController::setupSystemCaptureWatcher() {
+    if (!systemCaptureWatchEnabled_) {
+        return;
+    }
+    if (systemCaptureWatcher_ == nullptr) {
+        systemCaptureWatcher_ = new QFileSystemWatcher(this);
+        connect(systemCaptureWatcher_, &QFileSystemWatcher::directoryChanged, this,
+                [this]() {
+                    // 去抖：系统截图工具常"先建文件再写内容"，一次操作会
+                    // 触发多个目录事件；等文件写完再扫（300ms 足够）。
+                    if (systemCaptureScanTimer_ != nullptr) {
+                        systemCaptureScanTimer_->start();
+                    }
+                });
+    }
+    if (systemCaptureScanTimer_ == nullptr) {
+        systemCaptureScanTimer_ = new QTimer(this);
+        systemCaptureScanTimer_->setSingleShot(true);
+        systemCaptureScanTimer_->setInterval(300);
+        connect(systemCaptureScanTimer_, &QTimer::timeout, this,
+                [this]() { rescanSystemCaptures(false); });
+    }
+    const QStringList dirs = systemCaptureDirectories();
+    if (!dirs.isEmpty()) {
+        systemCaptureWatcher_->addPaths(dirs);
+    }
+    // 启动时先登记已有文件（initial=true 只记录已存在，不挂载）——
+    // 否则用户桌面上的历史截图会被一次性全部挂上衣架。
+    rescanSystemCaptures(true);
+    qInfo().noquote()
+        << QStringLiteral("[jie2] 系统截图监听：%1 个目录（%2）")
+               .arg(dirs.size())
+               .arg(dirs.join(QStringLiteral("、")));
+}
+
+void TrayController::rescanSystemCaptures(bool initial) {
+    if (!systemCaptureWatchEnabled_) {
+        return;
+    }
+    const QDateTime now = QDateTime::currentDateTime();
+    for (const QString& directory : systemCaptureDirectories()) {
+        QDir dir(directory);
+        const QFileInfoList files = dir.entryInfoList(
+            {QStringLiteral("*.png"), QStringLiteral("*.PNG"),
+             QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"),
+             QStringLiteral("*.tiff"), QStringLiteral("*.bmp")},
+            QDir::Files, QDir::Time);
+        for (const QFileInfo& info : files) {
+            const QString path = info.absoluteFilePath();
+            if (knownSystemCaptures_.contains(path)) {
+                continue;
+            }
+            // 只关心"刚刚出现"的文件：2 分钟窗口足够覆盖慢速写盘，
+            // 又不会把旧文件当成新截图。
+            const qint64 ageSeconds = info.lastModified().secsTo(now);
+            const bool fresh = ageSeconds >= -5 && ageSeconds <= 120;
+            if (initial || !fresh) {
+                knownSystemCaptures_.insert(path);
+                continue;
+            }
+            if (!looksLikeSystemCapture(info.fileName())) {
+                knownSystemCaptures_.insert(path);
+                continue;
+            }
+            QImage image(path);
+            if (image.isNull() || image.width() < 8 || image.height() < 8) {
+                // 还没写完（或不是真图片）：**不登记**，等下一个目录事件重试。
+                continue;
+            }
+            knownSystemCaptures_.insert(path);
+            // 已在历史里就不重复挂（用户可能又重新截了同名文件）。
+            bool alreadyKnown = false;
+            for (const auto& entry : history_.entries()) {
+                if (QString::fromStdString(entry.path) == path) {
+                    alreadyKnown = true;
+                    break;
+                }
+            }
+            if (alreadyKnown) {
+                continue;
+            }
+            // 直接挂原文件（不复制）：用户删掉文件即从衣架消失，
+            // 与本程序自有截图的"移入废纸篓"语义区分开。
+            lastClipboardDigest_ = imageDigest(image);
+            recordCapture(path, image);
+            qInfo().noquote()
+                << QStringLiteral("[jie2] 系统截图已挂上衣架：%1").arg(path);
+            note(QStringLiteral("已挂上衣架（系统截图）"),
+                 info.fileName());
+        }
+    }
+}
+
 void TrayController::clipboardChanged() {
-    if (!clipboardWatchEnabled_ || clothesline_ == nullptr) {
+    if (!clipboardWatchEnabled_) {
         return;
     }
     if (clipboardProcessing_) {
@@ -1527,7 +1759,7 @@ void TrayController::showPinGroupManager() {
     // 管理对话框放栈上：exec() 期间主事件循环继续运行（嵌套事件循环），
     // 单实例通道与其它菜单动作不受影响。
     QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("截2 · 贴图分组管理"));
+    dialog.setWindowTitle(QStringLiteral("J2 · 贴图分组管理"));
     auto* layout = new QVBoxLayout(&dialog);
 
     auto* hint = new QLabel(
@@ -1598,7 +1830,7 @@ void TrayController::showPinGroupManager() {
 
 void TrayController::activateExistingInstance() {
     qInfo().noquote() << QStringLiteral("[jie2] 唤起已有实例");
-    note(QStringLiteral("截2 已在运行"),
+    note(QStringLiteral("J2 已在运行"),
          QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图，"
                         "Ctrl+Alt+C 保存剪贴板图像"));
 }
@@ -1752,6 +1984,12 @@ void TrayController::triggerBarcodeScan() {
 }
 
 void TrayController::triggerOcr() {
+    if (serviceInProgress_) return;
+    QScopedValueRollback<bool> busy(serviceInProgress_, true);
+    if (ocrConfig_.isCloud() && (ocrConfig_.endpoint.empty() || ocrConfig_.model.empty())) {
+        note("请先配置文字识别", "打开托盘菜单的“设置 → 文字识别”，填写服务地址、模型名称和密钥。", true);
+        return;
+    }
     // 来源：剪贴板图像（截图后内容即在此）。
     const QImage image = QApplication::clipboard()->image();
     if (image.isNull()) {
@@ -1818,12 +2056,23 @@ void TrayController::note(const QString& title, const QString& body, bool warnin
 void TrayController::showCapabilities() {
     // 重新探测一次再展示，避免展示过期的缓存状态。
     capabilities_ = platform_->probe();
-    const QString text =
-        QStringLiteral("实现：%1\n\n%2")
-            .arg(QString::fromStdString(platform_->name()),
-                 QString::fromStdString(capabilities_.describe()));
-    auto* box = new QMessageBox(QMessageBox::Information, QStringLiteral("截2 平台能力"),
-                                text, QMessageBox::Ok);
+    auto status = [](core::CapabilityStatus value) -> QString {
+        switch (value) {
+        case core::CapabilityStatus::Available: return QStringLiteral("可用");
+        case core::CapabilityStatus::Degraded: return QStringLiteral("受限，查看详细信息");
+        case core::CapabilityStatus::Unavailable: return QStringLiteral("不可用，查看详细信息");
+        case core::CapabilityStatus::NotApplicable: return QStringLiteral("当前系统无需此项");
+        default: return QStringLiteral("尚未确认");
+        }
+    };
+    const QString text = QStringLiteral("这是功能检查结果。标为“可用”的功能可以使用。\n\n屏幕截图：%1\n全局快捷键：%2\n贴图置顶：%3\n顶部条专用协议：%4\n图片剪贴板：%5\n\n系统：%6（%7）")
+        .arg(status(capabilities_.screenCapture.status), status(capabilities_.globalHotkey.status),
+             status(capabilities_.alwaysOnTop.status), status(capabilities_.layerShell.status),
+             status(capabilities_.clipboardImage.status), QString::fromStdString(platform_->name()),
+             QString::fromStdString(capabilities_.sessionDetail));
+    auto* box = new QMessageBox(QMessageBox::Information, QStringLiteral("J2 平台能力"), text, QMessageBox::Ok);
+    box->setTextFormat(Qt::PlainText);
+    box->setDetailedText(QString::fromStdString(capabilities_.describe()));
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setWindowModality(Qt::ApplicationModal);
     box->show();
@@ -1831,56 +2080,122 @@ void TrayController::showCapabilities() {
     box->activateWindow();
 }
 
+void TrayController::showSettings() {
+    if (settingsOpen_) return;
+    QScopedValueRollback<bool> opened(settingsOpen_, true);
+    saveConfig();
+    platform_->releaseAllHotkeys();
+    const auto restoreHotkeys = qScopeGuard([this] { registerHotkey(); });
+    SettingsDialog dialog(SettingsDialog::readConfig(configPath_));
+    for (;;) {
+        if (dialog.exec() != QDialog::Accepted) return;
+        QString error;
+        if (SettingsDialog::writeConfig(configPath_, dialog.configuration(), &error)) break;
+        QMessageBox::warning(&dialog, "设置未保存", "无法保存设置：" + error);
+    }
+    loadConfig();
+    setupTriggerCorner();
+    if (clothesline_) {
+        clothesline_->setDarkTheme(darkTheme_);
+        clothesline_->setWatchEnabled(clotheslineEnabled_);
+    } else if (capabilities_.session == core::SessionType::Wayland) {
+        waylandLineEnabled_ = clotheslineEnabled_;
+        if (waylandLineEnabled_) updateWaylandLine(); else stopWaylandLine();
+    }
+    for (auto* pin : pins_) {
+        pin->setDismissActions(pinEscAction_, pinShiftEscAction_);
+        pin->setThumbnailModifier(pinThumbnailModifier_);
+    }
+    // 全局快捷键可能被改过：注销后按新组合重新注册（loadConfig 已解析新值）。
+    // 系统截图监听开关也可能变了：关闭时摘掉目录监听，重新开启时重建。
+    if (systemCaptureWatcher_ != nullptr) {
+        const QStringList watched = systemCaptureWatcher_->directories();
+        if (!watched.isEmpty()) {
+            systemCaptureWatcher_->removePaths(watched);
+        }
+    }
+    if (systemCaptureWatchEnabled_) {
+        setupSystemCaptureWatcher();
+    }
+    rebuildMenu();
+}
+
+void TrayController::triggerTranslation() {
+    if (serviceInProgress_) return;
+    QScopedValueRollback<bool> busy(serviceInProgress_, true);
+    auto config = SettingsDialog::readConfig(configPath_);
+    core::OcrConfig service;
+    service.endpoint = config.get("translation.endpoint");
+    service.model = config.get("translation.model");
+    service.apiKey = config.get("translation.api_key");
+    service.timeoutMs = std::clamp(config.getInt("translation.timeout_ms", 60000), 1000, 300000);
+    if (service.endpoint.empty() || service.model.empty()) {
+        note("请先配置翻译", "打开托盘菜单的“设置 → 翻译”，填写服务地址、模型名称和密钥。", true); return;
+    }
+    auto* clipboard = QApplication::clipboard();
+    const QImage image = clipboard->image();
+    const QString text = image.isNull() ? clipboard->text() : QString();
+    if (image.isNull() && text.trimmed().isEmpty()) {
+        note("无法翻译", "剪贴板里没有文字或图片。请先复制文字或截图。", true); return;
+    }
+    if (QMessageBox::question(nullptr, "翻译将发送内容",
+            QStringLiteral("将剪贴板中的%1发送到以下服务进行翻译：\n%2\n\n是否继续？")
+                .arg(image.isNull() ? "文字" : "图片", QString::fromStdString(service.endpoint)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    const auto result = OcrRunner::translate(service, image, text,
+        QString::fromStdString(config.get("translation.target_language", "简体中文")));
+    if (!result.ok) { note("翻译失败", QString::fromStdString(result.error), true); return; }
+    clipboard->setText(QString::fromStdString(result.text));
+    auto* box = new QMessageBox(QMessageBox::Information, "翻译完成（已复制）",
+        QString::fromStdString(result.text), QMessageBox::Ok);
+    box->setTextFormat(Qt::PlainText);
+    box->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    box->setAttribute(Qt::WA_DeleteOnClose); box->show(); box->raise(); box->activateWindow();
+}
+
 void TrayController::registerHotkey() {
-    platform::HotkeySpec spec;
-    spec.id = kHotkeyId;
-    spec.modifiers = platform::kModCtrl | platform::kModAlt;
-    spec.key = platform::Key::T;
+    // 三个全局热键都走可自定义配置（设置 → 快捷键 → 全局快捷键）。
+    // 注册前先注销：改完快捷键后重新注册，必须避免旧组合继续占着。
+    platform_->releaseAllHotkeys();
 
+    // 截图热键。
     std::string error;
-    hotkeyRegistered_ =
-        platform_->grabHotkey(spec, &TrayController::hotkeyThunk, this, &error);
+    hotkeyRegistered_ = platform_->grabHotkey(
+        snipHotkeySpec_, &TrayController::hotkeyThunk, this, &error);
     hotkeyError_ = QString::fromStdString(error);
-
     if (hotkeyRegistered_) {
-        qInfo().noquote() << QStringLiteral("[jie2] 全局热键已注册：%1")
+        qInfo().noquote() << QStringLiteral("[jie2] 截图热键已注册：%1")
                                  .arg(QString::fromStdString(
-                                     platform::describeHotkey(spec)));
+                                     platform::displayHotkey(snipHotkeySpec_)));
     } else {
         qWarning().noquote()
-            << QStringLiteral("[jie2] 全局热键注册失败：%1").arg(hotkeyError_);
+            << QStringLiteral("[jie2] 截图热键注册失败：%1").arg(hotkeyError_);
     }
 
-    // 贴图热键（M4）：Ctrl+Alt+P。
-    platform::HotkeySpec pinSpec;
-    pinSpec.id = kPinHotkeyId;
-    pinSpec.modifiers = platform::kModCtrl | platform::kModAlt;
-    pinSpec.key = platform::Key::P;
+    // 贴图热键。
     std::string pinError;
-    pinHotkeyRegistered_ =
-        platform_->grabHotkey(pinSpec, &TrayController::hotkeyThunk, this, &pinError);
+    pinHotkeyRegistered_ = platform_->grabHotkey(
+        pinHotkeySpec_, &TrayController::hotkeyThunk, this, &pinError);
     pinHotkeyError_ = QString::fromStdString(pinError);
     if (pinHotkeyRegistered_) {
         qInfo().noquote() << QStringLiteral("[jie2] 贴图热键已注册：%1")
                                  .arg(QString::fromStdString(
-                                     platform::describeHotkey(pinSpec)));
+                                     platform::displayHotkey(pinHotkeySpec_)));
     } else {
         qWarning().noquote()
             << QStringLiteral("[jie2] 贴图热键注册失败：%1").arg(pinHotkeyError_);
     }
 
-    // 保存剪贴板图像热键（专业版对齐项 v2.5）：Ctrl+Alt+C。
-    platform::HotkeySpec saveClipSpec;
-    saveClipSpec.id = kSaveClipboardHotkeyId;
-    saveClipSpec.modifiers = platform::kModCtrl | platform::kModAlt;
-    saveClipSpec.key = platform::Key::C;
+    // 保存剪贴板图像热键（专业版对齐项 v2.5）。
     std::string saveClipError;
     saveClipboardHotkeyRegistered_ = platform_->grabHotkey(
-        saveClipSpec, &TrayController::hotkeyThunk, this, &saveClipError);
+        saveClipboardHotkeySpec_, &TrayController::hotkeyThunk, this,
+        &saveClipError);
     if (saveClipboardHotkeyRegistered_) {
-        qInfo().noquote() << QStringLiteral("[jie2] 保存剪贴板热键已注册：%1")
-                                 .arg(QString::fromStdString(
-                                     platform::describeHotkey(saveClipSpec)));
+        qInfo().noquote()
+            << QStringLiteral("[jie2] 保存剪贴板热键已注册：%1")
+                   .arg(QString::fromStdString(
+                       platform::displayHotkey(saveClipboardHotkeySpec_)));
     } else {
         qWarning().noquote()
             << QStringLiteral("[jie2] 保存剪贴板热键注册失败：%1")
@@ -1926,7 +2241,28 @@ void TrayController::handleHotkey(const std::string& id) {
     triggerCapture();
 }
 
+void TrayController::applyDefaultGlobalHotkeys() {
+    const auto apply = [](const char* keyName, const char* id,
+                          platform::HotkeySpec* spec, QString* text) {
+        const QString fallback = defaultGlobalHotkey(keyName);
+        platform::HotkeySpec parsed;
+        parsed.id = id;
+        platform::parseHotkeyText(fallback.toStdString(), &parsed);
+        *spec = parsed;
+        *text = fallback;
+    };
+    apply("t", kHotkeyId, &snipHotkeySpec_, &snipHotkeyText_);
+    apply("p", kPinHotkeyId, &pinHotkeySpec_, &pinHotkeyText_);
+    apply("c", kSaveClipboardHotkeyId, &saveClipboardHotkeySpec_,
+          &saveClipboardHotkeyText_);
+}
+
 void TrayController::loadConfig() {
+    // 全局快捷键先按出厂默认填好，再由配置文件覆盖。
+    // 必须放在读文件**之前**：首次运行时配置文件还不存在，函数会在下面
+    // 提前 return —— 那时若规格仍是空值，注册出去的就是"无主键"组合，
+    // 表现为热键直接不可用（这个缺陷在改成可配置时引入过）。
+    applyDefaultGlobalHotkeys();
     QFile file(configPath_);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return;
@@ -1936,6 +2272,39 @@ void TrayController::loadConfig() {
         core::Config::parse(std::string(raw.constData(), raw.size()));
     hotkeyCount_ = config.getInt("hotkey.count", 0);
     captureCount_ = config.getInt("capture.count", 0);
+
+    // 全局快捷键（设置 → 快捷键 → 全局快捷键，可自定义）。
+    // 解析失败（用户手改配置写错）时如实告警并回落到出厂默认 ——
+    // 不能因为一行配置写错就让截图热键彻底失效。
+    const auto loadGlobalHotkey =
+        [&config](const char* key, const char* fallbackKeyName,
+                  const char* id, platform::HotkeySpec* spec,
+                  QString* text) {
+            const QString fallback = defaultGlobalHotkey(fallbackKeyName);
+            const std::string value =
+                config.get(key, fallback.toStdString());
+            platform::HotkeySpec parsed;
+            parsed.id = id;
+            if (platform::parseHotkeyText(value, &parsed)) {
+                *spec = parsed;
+                *text = QString::fromStdString(value);
+                return;
+            }
+            qWarning().noquote()
+                << QStringLiteral("[jie2] 全局快捷键配置无效（%1=%2），改用默认 %3")
+                       .arg(QString::fromUtf8(key))
+                       .arg(QString::fromStdString(value), fallback);
+            platform::parseHotkeyText(fallback.toStdString(), &parsed);
+            parsed.id = id;
+            *spec = parsed;
+            *text = fallback;
+        };
+    loadGlobalHotkey("hotkey.snip", "t", kHotkeyId, &snipHotkeySpec_,
+                     &snipHotkeyText_);
+    loadGlobalHotkey("hotkey.pin", "p", kPinHotkeyId, &pinHotkeySpec_,
+                     &pinHotkeyText_);
+    loadGlobalHotkey("hotkey.save_clipboard", "c", kSaveClipboardHotkeyId,
+                     &saveClipboardHotkeySpec_, &saveClipboardHotkeyText_);
 
     // 输出装饰（M1）
     roundEnabled_ = config.getBool("output.round.enabled", false);
@@ -1959,6 +2328,9 @@ void TrayController::loadConfig() {
     // 衣架（M3）
     clotheslineEnabled_ = config.getBool("clothesline.enabled", true);
     clipboardWatchEnabled_ = config.getBool("clothesline.hang_copied", true);
+    // 系统截图（Cmd+Shift+4 等）直接落盘，需要单独一路目录监听。
+    systemCaptureWatchEnabled_ =
+        config.getBool("clothesline.hang_system_capture", true);
 
     // 标注调色板（M2 增补，专业版对齐项）
     paletteSize_ = config.getInt("annotation.palette_size", 6);
@@ -2017,6 +2389,7 @@ void TrayController::loadConfig() {
     // OCR（M5）
     std::string ocrWarning;
     ocrConfig_ = core::parseOcrConfig(config, &ocrWarning);
+    ocrConfig_.backend = core::OcrBackendKind::OpenAiCompatible;
     if (!ocrWarning.empty()) {
         qWarning().noquote() << QStringLiteral("[jie2] %1")
                                     .arg(QString::fromStdString(ocrWarning));
@@ -2024,11 +2397,15 @@ void TrayController::loadConfig() {
 }
 
 void TrayController::saveConfig() {
-    core::Config config;
+    core::Config config = SettingsDialog::readConfig(configPath_);
     config.set("hotkey.count", std::to_string(hotkeyCount_));
     config.set("capture.count", std::to_string(captureCount_));
     config.set("hotkey.id", kHotkeyId);
     config.set("platform", platform_->name());
+    // 全局快捷键文本（用户设定值原样回写，不写解析结果）。
+    config.set("hotkey.snip", snipHotkeyText_.toStdString());
+    config.set("hotkey.pin", pinHotkeyText_.toStdString());
+    config.set("hotkey.save_clipboard", saveClipboardHotkeyText_.toStdString());
 
     // 输出装饰（M1）
     config.set("output.round.enabled", roundEnabled_ ? "true" : "false");
@@ -2048,6 +2425,8 @@ void TrayController::saveConfig() {
     config.set("clothesline.enabled", clotheslineEnabled_ ? "true" : "false");
     config.set("clothesline.hang_copied",
                clipboardWatchEnabled_ ? "true" : "false");
+    config.set("clothesline.hang_system_capture",
+               systemCaptureWatchEnabled_ ? "true" : "false");
 
     // 标注调色板（M2 增补）
     config.set("annotation.palette_size", std::to_string(paletteSize_));
@@ -2055,26 +2434,17 @@ void TrayController::saveConfig() {
     // 主题（v2.6）：回写用户设定值（system/dark/light），不写解析结果。
     config.set("appearance.theme", themeSetting_.toStdString());
 
-    // OCR（M5）：只回写非机密项；api_key 由用户在配置里自填，
-    // 程序不主动覆写（避免把已配置的密钥清空）。
+    // 从已有配置合并，保留密钥、翻译和快捷键等设置；空值也要正确覆盖旧值。
     config.set("ocr.backend", core::toString(ocrConfig_.backend));
     config.set("ocr.language", ocrConfig_.language);
     config.set("ocr.timeout_ms", std::to_string(ocrConfig_.timeoutMs));
-    if (!ocrConfig_.endpoint.empty()) {
-        config.set("ocr.endpoint", ocrConfig_.endpoint);
-    }
-    if (!ocrConfig_.model.empty()) {
-        config.set("ocr.model", ocrConfig_.model);
-    }
+    config.set("ocr.endpoint", ocrConfig_.endpoint);
+    config.set("ocr.model", ocrConfig_.model);
+    config.set("ocr.api_key", ocrConfig_.apiKey);
+    QString error;
+    if (!SettingsDialog::writeConfig(configPath_, config, &error))
+        qWarning().noquote() << QStringLiteral("[jie2] 配置写入失败：%1").arg(error);
 
-    QFile file(configPath_);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        qWarning().noquote()
-            << QStringLiteral("[jie2] 配置写入失败：%1").arg(configPath_);
-        return;
-    }
-    const std::string text = config.serialize();
-    file.write(text.data(), static_cast<qint64>(text.size()));
 }
 
 // ---- 截图历史（M1：, / . 回放）----
