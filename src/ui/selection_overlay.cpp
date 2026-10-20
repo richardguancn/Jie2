@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
 
 #include <QApplication>
@@ -9,20 +10,32 @@
 #include <QDebug>
 #include <QEventLoop>
 #include <QFontMetrics>
+#include <QFontDatabase>
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QThread>
 #include <QTimer>
 #include <QToolTip>
+#include <QToolButton>
 #include <QWindow>
 #include <QWheelEvent>
+#include <QVBoxLayout>
 
 #include "ui/annotation_render.h"
+#include "ui/ocr_runner.h"
 
 namespace jie2::ui {
 
@@ -126,6 +139,7 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
       paletteSize_(options.paletteSize),
       shortcuts_(options.shortcuts),
       promoteWindow_(std::move(options.promoteWindow)) {
+    ocrConfig_ = std::move(options.ocrConfig);
     // 主题：深色 = 现有观感（默认）；浅色给自绘面板整套浅色板。
     if (options.darkTheme) {
         chrome_ = ChromeColors{QColor(28, 28, 32, 235), QColor(70, 70, 78),
@@ -196,6 +210,7 @@ SelectionOverlay::Outcome SelectionOverlay::run(const QPixmap& frozen,
 }
 
 void SelectionOverlay::setFrozenImage(const QImage& image, bool isCurrentScreen) {
+    invalidateOcr();
     frozenImage_ = image;
     frozen_ = QPixmap::fromImage(image);
     if (isCurrentScreen) {
@@ -459,6 +474,7 @@ core::Rgba SelectionOverlay::currentColor() const {
 }
 
 void SelectionOverlay::rebuildComposed() {
+    invalidateOcr();
     if (frozenImage_.isNull()) {
         composedBase_ = QImage();
         displayPixmap_ = QPixmap();
@@ -919,6 +935,10 @@ void SelectionOverlay::paintEvent(QPaintEvent*) {
     if (composedDirty_) {
         rebuildComposed();
     }
+    if (ocrPanel_ && ocrPanel_->isVisible()) {
+        if (currentSelection() != ocrSelection_) invalidateOcr();
+        else positionOcrPanel();
+    }
 
     QPainter painter(this);
     // 冻结画面：不做平滑缩放 —— 逻辑点与物理像素成整数倍时是 1:1 直通。
@@ -1131,6 +1151,235 @@ void SelectionOverlay::updateCropGesture(const QPoint& pos) {
     update();
 }
 
+void SelectionOverlay::invalidateOcr() {
+    ocrInvalidated_ = true;
+    if (ocrPanel_) ocrPanel_->hide();
+}
+
+void SelectionOverlay::ensureOcrPanel() {
+    if (ocrPanel_) return;
+    ocrPanel_ = new QFrame(this);
+    ocrPanel_->setAttribute(Qt::WA_NoMousePropagation);
+    ocrPanel_->setObjectName("ocrResultPanel");
+    ocrPanel_->setCursor(Qt::ArrowCursor);
+    QFont systemFont = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+    systemFont.setPointSizeF(13);
+    systemFont.setWeight(QFont::Normal);
+    ocrPanel_->setFont(systemFont);
+    const bool dark = chrome_.panelBg.lightness() < 128;
+    QPalette palette = ocrPanel_->palette();
+    const QColor foreground(dark ? "#f5f5f7" : "#1d1d1f");
+    const QColor secondary(dark ? "#a1a1a6" : "#6e6e73");
+    palette.setColor(QPalette::Window, QColor(dark ? "#2b2b2e" : "#fafafa"));
+    palette.setColor(QPalette::Base, palette.color(QPalette::Window));
+    palette.setColor(QPalette::Button, QColor(dark ? "#414144" : "#ececef"));
+    palette.setColor(QPalette::WindowText, foreground);
+    palette.setColor(QPalette::Text, foreground);
+    palette.setColor(QPalette::ButtonText, foreground);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(dark ? "#737378" : "#aeaeb2"));
+    palette.setColor(QPalette::Highlight, QColor("#007aff"));
+    palette.setColor(QPalette::HighlightedText, Qt::white);
+    ocrPanel_->setPalette(palette);
+    ocrPanel_->setStyleSheet(QStringLiteral(
+        "QFrame#ocrResultPanel { background: %1; border: 1px solid %2; border-radius: 12px; }"
+        "QLabel { color: %3; background: transparent; border: none; }"
+        "QLabel#ocrStatus { color: %4; }"
+        "QPlainTextEdit#ocrText { background: transparent; color: %3; border: none; padding: 0; selection-background-color: #007aff; selection-color: white; }"
+        "QToolButton#ocrClose { background: transparent; border: none; border-radius: 12px; }"
+        "QToolButton#ocrClose:hover { background: %5; }"
+        // 截图主题可能与系统外观不同，显式配色，避免系统深色按钮在浅色面板上消失。
+        "QPushButton { background: %5; color: %3; border: 1px solid transparent; border-radius: 6px; padding: 3px 12px; min-height: 18px; }"
+        "QPushButton:hover { background: %6; }"
+        "QPushButton:focus { border-color: #007aff; }"
+        "QPushButton#ocrCopy { background: #007aff; color: white; }"
+        "QPushButton#ocrCopy:hover { background: #0874eb; }"
+        "QPushButton#ocrCopy:pressed { background: #0064ce; }"
+        "QPushButton:disabled, QPushButton#ocrCopy:disabled { background: %7; color: %8; border-color: transparent; }")
+        .arg(dark ? "#2b2b2e" : "#fafafa", dark ? "#48484b" : "#dcdcdf",
+             foreground.name(), secondary.name(), dark ? "#414144" : "#e8e8ed",
+             dark ? "#515154" : "#dedee3", dark ? "#343437" : "#efeff1",
+             dark ? "#737378" : "#aeaeb2"));
+    auto* shadow = new QGraphicsDropShadowEffect(ocrPanel_);
+    shadow->setBlurRadius(28);
+    shadow->setOffset(0, 6);
+    shadow->setColor(QColor(0, 0, 0, dark ? 80 : 40));
+    ocrPanel_->setGraphicsEffect(shadow);
+    auto* layout = new QVBoxLayout(ocrPanel_);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+    auto* header = new QHBoxLayout;
+    auto* title = new QLabel(QStringLiteral("识别结果"), ocrPanel_);
+    QFont titleFont = systemFont; titleFont.setWeight(QFont::DemiBold);
+    title->setFont(titleFont);
+    header->addWidget(title);
+    header->addStretch();
+    auto* close = new QToolButton(ocrPanel_);
+    close->setObjectName("ocrClose");
+    close->setAccessibleName(QStringLiteral("关闭识别结果"));
+    close->setToolTip(QStringLiteral("关闭识别结果"));
+    close->setAutoRaise(true);
+    close->setFixedSize(24, 24);
+    QPixmap closeIcon(32, 32); closeIcon.fill(Qt::transparent);
+    {
+        QPainter painter(&closeIcon); painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(secondary, 2.4, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(QPointF(9, 9), QPointF(23, 23));
+        painter.drawLine(QPointF(23, 9), QPointF(9, 23));
+    }
+    close->setIcon(QIcon(closeIcon));
+    close->setIconSize(QSize(12, 12));
+    header->addWidget(close);
+    layout->addLayout(header);
+    ocrStatus_ = new QLabel(ocrPanel_);
+    ocrStatus_->setObjectName("ocrStatus");
+    QFont statusFont = systemFont; statusFont.setPointSizeF(11);
+    ocrStatus_->setFont(statusFont);
+    ocrStatus_->setWordWrap(true);
+    ocrStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    layout->addWidget(ocrStatus_);
+    ocrText_ = new QPlainTextEdit(ocrPanel_);
+    ocrText_->setObjectName("ocrText");
+    ocrText_->setReadOnly(true);
+    ocrText_->setFrameShape(QFrame::NoFrame);
+    ocrText_->document()->setDocumentMargin(0);
+    ocrText_->setFont(systemFont);
+    ocrText_->setMinimumSize(0, 40);
+    ocrText_->setPlaceholderText(QStringLiteral("识别出的文字会显示在这里"));
+    layout->addWidget(ocrText_, 1);
+    auto* divider = new QFrame(ocrPanel_);
+    divider->setFixedHeight(1);
+    divider->setStyleSheet(QStringLiteral("background: %1; border: none;")
+        .arg(dark ? "#424245" : "#e5e5e7"));
+    layout->addWidget(divider);
+    auto* actions = new QHBoxLayout;
+    ocrRetry_ = new QPushButton(QStringLiteral("重新识别"), ocrPanel_);
+    ocrRetry_->setObjectName("ocrRetry");
+    ocrCopy_ = new QPushButton(QStringLiteral("复制文字"), ocrPanel_);
+    ocrCopy_->setObjectName("ocrCopy");
+    for (auto* button : {ocrRetry_, ocrCopy_}) button->setAutoDefault(false);
+    ocrCopy_->setDefault(true);
+    actions->addWidget(ocrRetry_);
+    actions->addStretch();
+    actions->addWidget(ocrCopy_);
+    layout->addLayout(actions);
+    connect(close, &QToolButton::clicked, this, [this] {
+        ocrPanel_->hide(); setFocus();
+    });
+    connect(ocrRetry_, &QPushButton::clicked, this, &SelectionOverlay::startOcr);
+    connect(ocrCopy_, &QPushButton::clicked, this, [this] {
+        QApplication::clipboard()->setText(ocrText_->toPlainText());
+        ocrStatus_->setText(QStringLiteral("文字已复制"));
+    });
+}
+
+void SelectionOverlay::positionOcrPanel() {
+    const QRect area = rect().adjusted(10, 10, -10, -10);
+    const QRect selection = currentSelection();
+    const QRect bar = toolbarRect(selection).adjusted(-6, -6, 6, 6);
+    // 优先放右侧，其次左侧、下方、上方；避开截图与工具条。
+    const int below = qMax(selection.bottom(), bar.bottom()) + 12;
+    const int above = qMin(selection.top(), bar.top()) - 12;
+    const std::array<QRect, 4> spaces = {
+        QRect(selection.right() + 12, area.top(), area.right() - selection.right() - 11, area.height()),
+        QRect(area.left(), area.top(), selection.left() - area.left() - 12, area.height()),
+        QRect(area.left(), below, area.width(), area.bottom() - below + 1),
+        QRect(area.left(), area.top(), area.width(), above - area.top())};
+    QRect target;
+    for (int i = 0; i < int(spaces.size()); ++i) {
+        const QRect space = spaces[i].intersected(area);
+        if (space.width() < 220 || space.height() < 200) continue;
+        const QSize size(qMin(320, space.width()), qMin(360, space.height()));
+        const int x = i == 1 ? space.right() - size.width() + 1 :
+                      i >= 2 ? qBound(space.left(), selection.left(), space.right() - size.width() + 1) : space.left();
+        const int y = i < 2 ? qBound(space.top(), selection.top(), space.bottom() - size.height() + 1) :
+                      i == 3 ? space.bottom() - size.height() + 1 : space.top();
+        const QRect candidate(QPoint(x, y), size);
+        if (!candidate.intersects(bar)) { target = candidate; break; }
+    }
+    // 选满屏或小屏时，面板在屏内浮动，仍可关闭后继续操作截图。
+    if (target.isEmpty()) {
+        const std::array<QRect, 4> aroundBar = {
+            QRect(area.left(), bar.bottom() + 8, area.width(), area.bottom() - bar.bottom() - 7),
+            QRect(area.left(), area.top(), area.width(), bar.top() - area.top() - 8),
+            QRect(bar.right() + 8, area.top(), area.right() - bar.right() - 7, area.height()),
+            QRect(area.left(), area.top(), bar.left() - area.left() - 8, area.height())};
+        QRect best;
+        for (const QRect& space : aroundBar) {
+            if (space.width() >= 220 && space.height() >= 180 &&
+                space.width() * space.height() > best.width() * best.height()) best = space;
+        }
+        if (best.isEmpty()) best = area;
+        target = QRect(QPoint(0, 0), QSize(qMin(320, best.width()), qMin(360, best.height())));
+        target.moveTopRight(best.topRight());
+    }
+    ocrPanel_->setGeometry(target);
+}
+
+void SelectionOverlay::startOcr() {
+    if (ocrBusy_ || !hasSelection_ || currentSelection().isEmpty()) return;
+    commitTextInput();
+    if (composedDirty_) rebuildComposed();
+    const QImage image = buildFinalImage();
+    ensureOcrPanel();
+    ocrSelection_ = currentSelection();
+    ocrInvalidated_ = false;
+    ocrText_->clear();
+    ocrCopy_->setEnabled(false);
+    ocrRetry_->setEnabled(true);
+    positionOcrPanel();
+    ocrPanel_->show();
+    ocrPanel_->raise();
+    if (ocrConfig_.endpoint.empty() || ocrConfig_.model.empty()) {
+        ocrStatus_->setText(QStringLiteral("请先在“设置 → 文字识别”中填写服务地址、模型名称和密钥。"));
+        return;
+    }
+    if (image.isNull()) {
+        ocrStatus_->setText(QStringLiteral("无法读取选区图像，请重新选择截图区域。"));
+        return;
+    }
+    ocrBusy_ = true;
+    ocrRetry_->setEnabled(false);
+    ocrStatus_->setText(QStringLiteral("等待确认发送选区图片…"));
+    const auto answer = QMessageBox::warning(this, QStringLiteral("文字识别将上传图像"),
+        QStringLiteral("识别时会把当前选区的图片发送至：\n%1\n\n是否继续？")
+            .arg(QString::fromStdString(ocrConfig_.endpoint)),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        ocrBusy_ = false;
+        ocrRetry_->setEnabled(true);
+        ocrStatus_->setText(QStringLiteral("已取消识别，图片未发送。"));
+        update();
+        return;
+    }
+    ocrStatus_->setText(QStringLiteral("正在识别，请稍候…"));
+    update();
+    const auto result = std::make_shared<core::OcrResult>();
+    auto* worker = QThread::create([config = ocrConfig_, image, result] {
+        *result = OcrRunner::recognizeImage(config, image);
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    connect(worker, &QThread::finished, this, [this, result, image] {
+        ocrBusy_ = false;
+        ocrRetry_->setEnabled(true);
+        if (ocrInvalidated_ || image != buildFinalImage()) {
+            invalidateOcr();
+            update();
+            return;
+        }
+        if (!result->ok) {
+            ocrStatus_->setText(QStringLiteral("识别失败：%1\n可以重新识别，或在设置中检查服务配置。")
+                .arg(QString::fromStdString(result->error)));
+        } else {
+            const QString text = QString::fromStdString(result->text);
+            ocrText_->setPlainText(text);
+            ocrStatus_->setText(text.trimmed().isEmpty() ? QStringLiteral("未识别到文字。") : QStringLiteral("识别完成，可选择或复制文字。"));
+            ocrCopy_->setEnabled(!text.trimmed().isEmpty());
+        }
+        update();
+    });
+    worker->start();
+}
+
 const std::vector<SelectionOverlay::ToolbarItem>&
 SelectionOverlay::toolbarItems() {
     // 图标按钮保持紧凑；标签用于悬停提示。
@@ -1144,6 +1393,7 @@ SelectionOverlay::toolbarItems() {
         {ToolbarButton::Tool, core::AnnotationTool::Eraser, "橡皮擦", 32},
         {ToolbarButton::Undo, core::AnnotationTool::Rect, "撤销", 32},
         {ToolbarButton::Redo, core::AnnotationTool::Rect, "重做", 32},
+        {ToolbarButton::Ocr, core::AnnotationTool::Rect, "OCR · 识别选区文字", 32},
         {ToolbarButton::Cancel, core::AnnotationTool::Rect, "取消截图", 32},
         {ToolbarButton::Pin, core::AnnotationTool::Rect, "贴到屏幕", 32},
         {ToolbarButton::Save, core::AnnotationTool::Rect, "保存到文件", 32},
@@ -1226,7 +1476,8 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
 
         QColor foreground(238, 238, 240);
         const bool enabled = item.action == ToolbarButton::Undo ? annotations_.canUndo() :
-                             item.action == ToolbarButton::Redo ? annotations_.canRedo() : true;
+                             item.action == ToolbarButton::Redo ? annotations_.canRedo() :
+                             item.action == ToolbarButton::Ocr ? !ocrBusy_ : true;
         if (!enabled) foreground = QColor(130, 131, 135);
         const bool selected = toolChosen_ && item.action == ToolbarButton::Tool &&
             (currentTool_ == item.tool || (i == 0 && currentTool_ == core::AnnotationTool::Ellipse) ||
@@ -1242,7 +1493,11 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
         painter.translate(rect.center() - QPoint(10, 10));
         painter.setPen(QPen(foreground, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
-        if (item.action == ToolbarButton::Cancel) {
+        if (item.action == ToolbarButton::Ocr) {
+            QFont font = smallFont(); font.setPixelSize(9); font.setBold(true);
+            painter.setFont(font);
+            painter.drawText(QRect(-3, 0, 26, 20), Qt::AlignCenter, "OCR");
+        } else if (item.action == ToolbarButton::Cancel) {
             painter.drawLine(5, 5, 15, 15); painter.drawLine(15, 5, 5, 15);
         } else if (item.action == ToolbarButton::Save) {
             painter.drawRect(QRectF(3, 2, 14, 16));
@@ -1459,6 +1714,9 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
     const ToolbarButton hit = toolbarHitTest(event->pos(), &index);
     const auto& items = toolbarItems();
     switch (hit) {
+        case ToolbarButton::Ocr:
+            startOcr();
+            return;
         case ToolbarButton::Save:
             outcome_.action = Action::SaveFile;
             commit(true);
@@ -1501,6 +1759,8 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
         case ToolbarButton::None:
             break;
     }
+
+    invalidateOcr();
 
     cropHandle_ = cropHandleAt(event->pos());
     if (cropHandle_ >= 0 || (hasSelection_ && !toolChosen_ && selectionRect_.contains(event->pos()))) {
@@ -1876,7 +2136,8 @@ void SelectionOverlay::wheelEvent(QWheelEvent* event) {
 }
 
 bool SelectionOverlay::event(QEvent* event) {
-    if (event->type() == QEvent::KeyPress) {
+    if (event->type() == QEvent::KeyPress &&
+        !(ocrPanel_ && ocrPanel_->isAncestorOf(focusWidget()))) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
             const unsigned mods = shortcutModifiers(key->modifiers());
@@ -1891,6 +2152,11 @@ bool SelectionOverlay::event(QEvent* event) {
 }
 
 void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
+    if (ocrPanel_ && ocrPanel_->isVisible() && ocrPanel_->isAncestorOf(focusWidget())) {
+        if (event->key() == Qt::Key_Escape) { ocrPanel_->hide(); setFocus(); }
+        event->accept();
+        return;
+    }
     const unsigned scMods = shortcutModifiers(event->modifiers());
     const int shortcutKey = event->key() == Qt::Key_Enter ? Qt::Key_Return : event->key();
     // ---- 应用内快捷键（v2.11.3：可自定义；默认 T/N/E/M/D/R/O/B/Shift+B）----

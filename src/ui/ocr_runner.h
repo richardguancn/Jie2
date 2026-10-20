@@ -19,6 +19,8 @@ namespace jie2::ui {
 
 class OcrRunner {
 public:
+    /// 使用配置中的图片模型识别，供截图结果面板在工作线程中调用。
+    static core::OcrResult recognizeImage(const core::OcrConfig& config, const QImage& image);
     /// 执行识别。platform 用于"系统能力"后端（macOS Vision）。
     /// 同步执行（内部起事件循环等待进程/网络），适合桌面工具的
     /// "点一下等结果"的交互模型。

@@ -363,6 +363,10 @@ core::OcrResult OcrRunner::runCustomCommand(const core::OcrConfig& config,
                                     "custom-command");
 }
 
+core::OcrResult OcrRunner::recognizeImage(const core::OcrConfig& config, const QImage& image) {
+    return runOpenAiCompatible(config, image);
+}
+
 core::OcrResult OcrRunner::runOpenAiCompatible(const core::OcrConfig& config,
                                                const QImage& image,
                                                const QString& prompt,

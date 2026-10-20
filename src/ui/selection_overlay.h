@@ -12,11 +12,16 @@
 #include <vector>
 
 #include "core/annotation.h"
+#include "core/ocr.h"
 #include "core/shortcut_map.h"
 #include "core/snap.h"
 
 class QLineEdit;
 class QScreen;
+class QFrame;
+class QLabel;
+class QPlainTextEdit;
+class QPushButton;
 
 namespace jie2::ui {
 
@@ -34,6 +39,7 @@ struct SelectionOverlayOptions {
     bool selectImage = false;  // 衣架标注：居中显示并选中整张图片
     bool darkTheme = true;      // 主题（v2.6：跟随系统）
     bool eraserUndoable = true; // 橡皮擦删除可撤销（v2.6：可禁用二次编辑）
+    core::OcrConfig ocrConfig;  // 与设置中的文字识别服务共用配置
     /// 把遮罩窗口提升到能盖住全屏应用 / 远程桌面客户端的层级，
     /// 并让它拿到键盘焦点。参数是原生窗口句柄，返回是否已施加提升动作。
     /// 由调用方注入（UI 层不能直接依赖 platform 层）。
@@ -113,7 +119,7 @@ protected:
 private:
     friend class UiAlignmentTest;
     /// 工具条按钮的语义。
-    enum class ToolbarButton { None, Save, Copy, Pin, Cancel, Tool, Undo, Redo, Color };
+    enum class ToolbarButton { None, Save, Copy, Pin, Cancel, Tool, Undo, Redo, Color, Ocr };
 
     /// 工具条按钮描述。顺序即显示顺序。
     struct ToolbarItem {
@@ -143,6 +149,10 @@ private:
     QRect toolbarRect(const QRect& selection) const;
     QRect toolbarButtonRect(const QRect& selection, int index) const;
     ToolbarButton toolbarHitTest(const QPoint& pos, int* index) const;
+    void startOcr();
+    void ensureOcrPanel();
+    void positionOcrPanel();
+    void invalidateOcr();
     QColor pixelColorAt(const QPoint& logicalPos) const;
 
     // ---- 标注（M2）----
@@ -219,6 +229,15 @@ private:
     Outcome outcome_;
     int toolbarHover_ = -1;
     bool toolChosen_ = false;
+    core::OcrConfig ocrConfig_;
+    bool ocrBusy_ = false;
+    bool ocrInvalidated_ = false;
+    QRect ocrSelection_;
+    QFrame* ocrPanel_ = nullptr;
+    QLabel* ocrStatus_ = nullptr;
+    QPlainTextEdit* ocrText_ = nullptr;
+    QPushButton* ocrCopy_ = nullptr;
+    QPushButton* ocrRetry_ = nullptr;
     int cropHandle_ = -1;
     bool movingCrop_ = false;
     QPoint cropPress_;

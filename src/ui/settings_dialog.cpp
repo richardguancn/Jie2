@@ -15,8 +15,13 @@
 #include "core/key_names.h"
 #include <QKeyEvent>
 #include <QFocusEvent>
+#include <QMouseEvent>
 #include "platform/hotkey.h"
 #include <QComboBox>
+#include <QListView>
+#include <QProxyStyle>
+#include <QStyleFactory>
+#include <QStyledItemDelegate>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileInfo>
@@ -28,6 +33,9 @@
 #include <QSaveFile>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QToolButton>
+#include <QResizeEvent>
+#include <QWheelEvent>
 #include <QTabWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -94,6 +102,176 @@ bool SettingsDialog::writeConfig(const QString& path, const core::Config& config
     return true;
 }
 namespace {
+// 只对设置选择框使用普通列表弹层，避免 macOS 原生菜单覆盖应用样式。
+class SettingsChoiceStyle final : public QProxyStyle {
+public:
+    SettingsChoiceStyle() : QProxyStyle(QStyleFactory::create("Fusion")) {}
+    int styleHint(StyleHint hint, const QStyleOption* option = nullptr,
+                  const QWidget* widget = nullptr, QStyleHintReturn* data = nullptr) const override {
+        if (hint == QStyle::SH_ComboBox_Popup) return 0;
+        return QProxyStyle::styleHint(hint, option, widget, data);
+    }
+};
+
+class SettingsChoiceItem final : public QStyledItemDelegate {
+public:
+    explicit SettingsChoiceItem(QComboBox* choice) : QStyledItemDelegate(choice), choice_(choice) {}
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        return {QStyledItemDelegate::sizeHint(option, index).width() + 36, 34};
+    }
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        const bool dark = choice_->palette().color(QPalette::Window).lightness() < 128;
+        const bool active = option.state & (QStyle::State_Selected | QStyle::State_MouseOver);
+        const QRect row = option.rect.adjusted(2, 1, -2, -1);
+        painter->save(); painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        if (active) {
+            painter->setBrush(QColor(dark ? "#283e55" : "#eaf3ff"));
+            painter->drawRoundedRect(row, 6, 6);
+        }
+        if (index.row() == choice_->currentIndex()) {
+            painter->setPen(QPen(QColor(dark ? "#70b4ff" : "#007aff"), 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            const QPointF center(row.left() + 15, row.center().y());
+            QPainterPath tick; tick.moveTo(center + QPointF(-4, 0));
+            tick.lineTo(center + QPointF(-1, 3)); tick.lineTo(center + QPointF(5, -4));
+            painter->drawPath(tick);
+        }
+        painter->setFont(choice_->font());
+        painter->setPen(QColor(dark ? "#f2f2f7" : "#242426"));
+        const QRect textRect = row.adjusted(32, 0, -10, 0);
+        painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
+            painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, textRect.width()));
+        painter->restore();
+    }
+private:
+    QComboBox* choice_;
+};
+
+class SettingsChoice final : public QComboBox {
+public:
+    SettingsChoice() {
+        auto* choiceStyle = new SettingsChoiceStyle; choiceStyle->setParent(this); setStyle(choiceStyle);
+        auto* list = new QListView; list->setObjectName("settingsChoiceList");
+        list->setFrameShape(QFrame::NoFrame); list->setMouseTracking(true);
+        list->setUniformItemSizes(true); list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setView(list); setItemDelegate(new SettingsChoiceItem(this));
+        view()->window()->installEventFilter(this);
+        view()->viewport()->installEventFilter(this);
+        setFixedSize(180, 34); setCursor(Qt::PointingHandCursor);
+        setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    }
+    void showPopup() override {
+        const bool dark = palette().color(QPalette::Window).lightness() < 128;
+        auto* popup = view()->window();
+        popup->setObjectName("settingsChoicePopup");
+        popup->setAttribute(Qt::WA_TranslucentBackground);
+        popup->setStyleSheet(QStringLiteral(
+            "QFrame#settingsChoicePopup { background: %1; border: 1px solid %2; border-radius: 10px; padding: 5px; }"
+            "QListView#settingsChoiceList { background: transparent; border: none; padding: 0px; outline: none; }")
+            .arg(dark ? "#2c2c2f" : "#ffffff", dark ? "#4a4a50" : "#dcdce1"));
+        QComboBox::showPopup(); update();
+    }
+    void hidePopup() override { QComboBox::hidePopup(); update(); }
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == view()->window() && event->type() == QEvent::Paint) {
+            // QComboBox 的私有弹层不会按 QFrame 的样式表绘制背景。
+            auto* popup = view()->window();
+            const bool dark = palette().color(QPalette::Window).lightness() < 128;
+            QPainter painter(popup); painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(QPen(QColor(dark ? "#4a4a50" : "#dcdce1"), 1));
+            painter.setBrush(QColor(dark ? "#2c2c2f" : "#ffffff"));
+            painter.drawRoundedRect(QRectF(popup->rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
+            return true;
+        }
+        if (watched == view()->viewport() && event->type() == QEvent::MouseButtonRelease) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                const auto index = view()->indexAt(mouse->position().toPoint());
+                if (index.isValid()) { setCurrentIndex(index.row()); hidePopup(); return true; }
+            }
+        }
+        return QComboBox::eventFilter(watched, event);
+    }
+    void paintEvent(QPaintEvent*) override {
+        const bool dark = palette().color(QPalette::Window).lightness() < 128;
+        const bool open = view()->isVisible();
+        QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing);
+        QColor border(dark ? "#4a4a50" : "#dcdce1");
+        if (underMouse()) border = QColor(dark ? "#a0a0a8" : "#68686e");
+        if (hasFocus() || open) border = QColor(dark ? "#5aa5ff" : "#70adf5");
+        painter.setPen(QPen(border, 1)); painter.setBrush(QColor(dark ? "#252527" : "#fafafb"));
+        painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+        painter.setPen(QColor(dark ? "#f2f2f7" : "#242426")); painter.setFont(font());
+        painter.drawText(rect().adjusted(12, 0, -36, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                        fontMetrics().elidedText(currentText(), Qt::ElideRight, width() - 48));
+        painter.setPen(QPen(QColor(dark ? "#a0a0a8" : "#68686e"), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const QPointF center(width() - 18, height() / 2.0);
+        const qreal direction = open ? -1 : 1;
+        QPainterPath arrow; arrow.moveTo(center + QPointF(-4, -2 * direction));
+        arrow.lineTo(center + QPointF(0, 2 * direction)); arrow.lineTo(center + QPointF(4, -2 * direction));
+        painter.drawPath(arrow);
+    }
+    void wheelEvent(QWheelEvent* event) override {
+        if (hasFocus()) QComboBox::wheelEvent(event); else event->ignore();
+    }
+};
+
+// 保留数字输入框的输入、校验和键盘操作，只替换狭小的上下箭头。
+class SettingsNumber final : public QSpinBox {
+public:
+    SettingsNumber() {
+        setProperty("settingsNumber", true);
+        setButtonSymbols(QAbstractSpinBox::NoButtons);
+        setAlignment(Qt::AlignCenter);
+        lineEdit()->setTextMargins(30, 0, 30, 0);
+        setFixedSize(144, 34);
+        decrease_ = makeButton("decrease", QStringLiteral("−"), QStringLiteral("减小"));
+        increase_ = makeButton("increase", QStringLiteral("+"), QStringLiteral("增大"));
+        connect(decrease_, &QToolButton::clicked, this, [this] {
+            setFocus(Qt::MouseFocusReason); stepDown();
+        });
+        connect(increase_, &QToolButton::clicked, this, [this] {
+            setFocus(Qt::MouseFocusReason); stepUp();
+        });
+        connect(this, &QSpinBox::valueChanged, this, [this] { updateButtons(); });
+    }
+protected:
+    bool event(QEvent* event) override {
+        const bool result = QSpinBox::event(event);
+        if (decrease_ && increase_ &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
+             event->type() == QEvent::StyleChange || event->type() == QEvent::LayoutRequest)) {
+            // macOS 原生样式在隐藏自带箭头后仍可能把编辑区缩到 1px。
+            // 输入区与两侧按钮由本控件统一排布，不再依赖原生箭头的尺寸。
+            lineEdit()->setGeometry(1, 1, width() - 2, height() - 2);
+            decrease_->setGeometry(4, 4, 26, height() - 8);
+            increase_->setGeometry(width() - 30, 4, 26, height() - 8);
+            updateButtons();
+        }
+        return result;
+    }
+    void wheelEvent(QWheelEvent* event) override {
+        if (hasFocus()) QSpinBox::wheelEvent(event);
+        else event->ignore();
+    }
+private:
+    QToolButton* decrease_ = nullptr;
+    QToolButton* increase_ = nullptr;
+    QToolButton* makeButton(const char* name, const QString& text, const QString& label) {
+        auto* button = new QToolButton(this);
+        button->setObjectName(name); button->setText(text);
+        button->setAccessibleName(label); button->setToolTip(label);
+        button->setFocusPolicy(Qt::NoFocus); button->setCursor(Qt::PointingHandCursor);
+        button->setAutoRepeat(true);
+        return button;
+    }
+    void updateButtons() {
+        decrease_->setEnabled(value() > minimum());
+        increase_->setEnabled(value() < maximum());
+    }
+};
+
 // 按键录入不经过文本输入法，也不把 Enter/Esc/Tab 交给对话框。
 class ShortcutEdit final : public QLineEdit {
 public:
@@ -296,19 +474,18 @@ void SettingsDialog::addBool(QFormLayout* form, const char* key, const QString& 
 }
 void SettingsDialog::addNumber(QFormLayout* form, const char* key, const QString& label,
                                int fallback, int minimum, int maximum) {
-    auto* field = new QSpinBox; field->setRange(minimum, maximum);
+    auto* field = new SettingsNumber; field->setRange(minimum, maximum);
     field->setValue(original_.getInt(key, fallback)); field->setObjectName(key);
-    field->setFixedWidth(130); field->setMinimumHeight(30); field->setAlignment(Qt::AlignRight);
-    if (QString::fromUtf8(key).endsWith("_ms")) field->setSuffix(" 毫秒");
+    if (QString::fromUtf8(key).endsWith("_ms")) { field->setSuffix(" 毫秒"); field->setFixedWidth(168); }
     else if (QString::fromUtf8(key).startsWith("output.")) field->setSuffix(" px");
     fields_[key] = field; appendRow(form, settingRow(label, field));
 }
 void SettingsDialog::addChoice(QFormLayout* form, const char* key, const QString& label,
                                const QStringList& labels, const QStringList& values, const QString& fallback) {
-    auto* field = new QComboBox;
+    auto* field = new SettingsChoice;
     for (int i = 0; i < labels.size(); ++i) field->addItem(labels[i], values[i]);
     field->setCurrentIndex(qMax(0, values.indexOf(QString::fromStdString(original_.get(key, fallback.toStdString())))));
-    field->setObjectName(key); field->setMinimumHeight(30); field->setMinimumWidth(148);
+    field->setObjectName(key);
     fields_[key] = field; appendRow(form, settingRow(label, field));
 }
 SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
@@ -513,8 +690,16 @@ void SettingsDialog::applyAppearance() {
         QLineEdit { background: @input; color: @text; border: 1px solid @inputBorder; border-radius: 6px; padding: 0px 9px; selection-background-color: #007aff; }
         QLineEdit:focus { border: 2px solid @focus; padding: 0px 8px; }
         QLineEdit[invalid="true"] { border: 1px solid @error; }
-        QSpinBox, QComboBox { background: @input; color: @text; border: 1px solid @inputBorder; border-radius: 6px; padding: 1px 9px; }
-        QSpinBox:focus, QComboBox:focus { border: 1px solid @focus; }
+        QComboBox { background: @input; color: @text; border: 1px solid @inputBorder; border-radius: 6px; padding: 1px 9px; }
+        QComboBox:focus { border: 1px solid @focus; }
+        QSpinBox[settingsNumber="true"] { background: @input; color: @text; border: 1px solid @inputBorder; border-radius: 8px; padding: 0px; }
+        QSpinBox[settingsNumber="true"]:hover { border-color: @secondary; }
+        QSpinBox[settingsNumber="true"]:focus { border-color: @focus; }
+        QSpinBox[settingsNumber="true"] QLineEdit { background: transparent; color: @text; border: none; padding: 0px; }
+        QSpinBox[settingsNumber="true"] QToolButton { background: transparent; color: @secondary; border: none; border-radius: 5px; padding: 0px; font-size: 17px; }
+        QSpinBox[settingsNumber="true"] QToolButton:hover { background: @hover; color: @text; }
+        QSpinBox[settingsNumber="true"] QToolButton:pressed { background: @selected; }
+        QSpinBox[settingsNumber="true"] QToolButton:disabled { color: @scroll; }
         QComboBox QAbstractItemView { background: @group; color: @text; selection-background-color: #007aff; }
         QPushButton { background: @button; color: @text; border: 1px solid @border; border-radius: 15px; min-height: 30px; min-width: 68px; padding: 0px 10px; }
         QPushButton:hover { background: @hover; }

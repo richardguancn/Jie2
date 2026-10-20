@@ -5,9 +5,12 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QFrame>
 #include <QLabel>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QToolButton>
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -223,6 +226,113 @@ private slots:
         QTest::mouseClick(round, Qt::LeftButton);
         QVERIFY(!radius->isVisible());
         QCOMPARE(dialog.configuration().getInt("output.round.radius"), 36);
+    }
+
+    void choiceSettingsControls() {
+        SettingsDialog dialog({}); dialog.show();
+        auto* nav = dialog.findChild<QListWidget*>("settingsNavigation");
+        auto* appearance = dialog.findChild<QComboBox*>("appearance.theme");
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        const QStringList fields = {"pin.esc_action", "pin.shift_esc_action", "pin.thumbnail_modifier"};
+        for (const QString theme : {QString("light"), QString("dark")}) {
+            appearance->setCurrentIndex(appearance->findData(theme)); nav->setCurrentRow(2);
+            for (const QSize size : {QSize(920, 700), QSize(780, 580)}) {
+                dialog.resize(size); QTest::qWait(40);
+                for (const QString& name : fields) {
+                    auto* choice = dialog.findChild<QComboBox*>(name);
+                    QVERIFY(choice); QVERIFY(choice->isVisible());
+                    if (!folder.isEmpty() && name == fields.first())
+                        QVERIFY(dialog.grab().save(folder + QString("/choices-%1-%2.png").arg(theme).arg(size.width())));
+                    QTest::mouseClick(choice, Qt::LeftButton);
+                    QTRY_VERIFY(choice->view()->isVisible());
+                    const int next = (choice->currentIndex() + 1) % choice->count();
+                    const QRect item = choice->view()->visualRect(choice->model()->index(next, 0));
+                    QVERIFY(choice->view()->viewport()->rect().contains(item.center()));
+                    QTest::mouseMove(choice->view()->viewport(), item.center()); QTest::qWait(30);
+                    if (!folder.isEmpty()) {
+                        auto* popup = choice->view()->window();
+                        QPixmap preview = dialog.grab();
+                        { QPainter painter(&preview); painter.drawPixmap(dialog.mapFromGlobal(popup->pos()), popup->grab()); }
+                        QVERIFY(preview.save(folder + QString("/popup-%1-%2-%3.png").arg(theme).arg(size.width()).arg(name)));
+                        QVERIFY(popup->grab().save(folder + QString("/menu-%1-%2.png").arg(theme, name)));
+                    }
+                    QTest::mouseClick(choice->view()->viewport(), Qt::LeftButton, Qt::NoModifier, item.center());
+                    QTRY_VERIFY(!choice->view()->isVisible());
+                    QCOMPARE(choice->currentIndex(), next);
+                    QCOMPARE(QString::fromStdString(dialog.configuration().get(name.toStdString())), choice->currentData().toString());
+                    QTest::mouseClick(choice, Qt::LeftButton);
+                    QTRY_VERIFY(choice->view()->isVisible());
+                    QTest::keyClick(choice->view(), Qt::Key_Escape);
+                    QTRY_VERIFY(!choice->view()->isVisible()); QCOMPARE(choice->currentIndex(), next);
+                }
+            }
+        }
+        auto* choice = dialog.findChild<QComboBox*>(fields.first());
+        choice->setCurrentIndex(0); choice->setFocus();
+        QTest::keyClick(choice, Qt::Key_Down); QCOMPARE(choice->currentIndex(), 1);
+        QTest::keyClick(choice, Qt::Key_Down, Qt::AltModifier);
+        QTRY_VERIFY(choice->view()->isVisible());
+        QTest::keyClick(choice->view(), Qt::Key_Home);
+        QTest::keyClick(choice->view(), Qt::Key_Return);
+        QTRY_VERIFY(!choice->view()->isVisible()); QCOMPARE(choice->currentIndex(), 0);
+        // 从菜单切换主题会立即重绘整个窗口，选项仍应正常提交并关闭。
+        nav->setCurrentRow(0);
+        QTest::mouseClick(appearance, Qt::LeftButton);
+        QTRY_VERIFY(appearance->view()->isVisible());
+        const int light = appearance->findData("light");
+        const QRect lightItem = appearance->view()->visualRect(appearance->model()->index(light, 0));
+        QTest::mouseClick(appearance->view()->viewport(), Qt::LeftButton, Qt::NoModifier, lightItem.center());
+        QTRY_VERIFY(!appearance->view()->isVisible()); QCOMPARE(appearance->currentData().toString(), QString("light"));
+        QVERIFY(dialog.palette().color(QPalette::Window).lightness() > 128);
+        const auto expected = dialog.configuration();
+        QTest::mouseClick(dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        SettingsDialog reopened(expected);
+        for (const QString& name : fields)
+            QCOMPARE(reopened.findChild<QComboBox*>(name)->currentData().toString(), QString::fromStdString(expected.get(name.toStdString())));
+    }
+
+    void numericSettingsControls() {
+        core::Config config; config.set("output.round.enabled", "true");
+        SettingsDialog dialog(config); dialog.show();
+        auto* nav = dialog.findChild<QListWidget*>("settingsNavigation");
+        nav->setCurrentRow(1);
+        auto* count = dialog.findChild<QSpinBox*>("annotation.palette_size");
+        auto* radius = dialog.findChild<QSpinBox*>("output.round.radius");
+        auto* decrease = count->findChild<QToolButton*>("decrease");
+        auto* increase = count->findChild<QToolButton*>("increase");
+        QVERIFY(decrease); QVERIFY(increase);
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        for (const QString theme : {QString("light"), QString("dark")}) {
+            auto* appearance = dialog.findChild<QComboBox*>("appearance.theme");
+            appearance->setCurrentIndex(appearance->findData(theme));
+            for (const QSize size : {QSize(920, 700), QSize(780, 580)}) {
+                dialog.resize(size); QTest::qWait(40);
+                const auto* editor = count->findChild<QLineEdit*>();
+                QVERIFY(editor->width() - editor->textMargins().left() - editor->textMargins().right() >= 64);
+                QVERIFY(radius->findChild<QLineEdit*>()->width() >= 100);
+                QVERIFY(count->rect().contains(decrease->geometry()));
+                QVERIFY(count->rect().contains(increase->geometry()));
+                QVERIFY(decrease->geometry().right() < increase->geometry().left());
+                QVERIFY(radius->suffix().contains("px"));
+                if (!folder.isEmpty()) {
+                    QVERIFY(dialog.grab().save(folder + QString("/numbers-%1-%2.png").arg(theme).arg(size.width())));
+                    QVERIFY(count->grab().save(folder + QString("/count-%1.png").arg(theme)));
+                    QVERIFY(radius->grab().save(folder + QString("/radius-%1.png").arg(theme)));
+                }
+            }
+            count->setValue(2); QVERIFY(!decrease->isEnabled());
+            QTest::mouseClick(increase, Qt::LeftButton); QCOMPARE(count->value(), 3);
+            count->setValue(10); QVERIFY(!increase->isEnabled());
+            QTest::mouseClick(decrease, Qt::LeftButton); QCOMPARE(count->value(), 9);
+            count->selectAll(); QTest::keyClicks(count, "7"); QCOMPARE(count->value(), 7);
+            QTest::keyClick(count, Qt::Key_Up); QCOMPARE(count->value(), 8);
+            QTest::keyClick(count, Qt::Key_Down); QCOMPARE(count->value(), 7);
+        }
+        QTest::mouseClick(dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        SettingsDialog reopened(dialog.configuration());
+        QCOMPARE(reopened.findChild<QSpinBox*>("annotation.palette_size")->value(), 7);
     }
 
     // 遮罩显示时必须请求平台层提升层级（远程桌面 / 全屏窗口场景）：
@@ -507,6 +617,178 @@ private slots:
         else QVERIFY(parts.last().toObject()["image_url"].toObject()["url"].toString().startsWith("data:image/png;base64,"));
         if (task == "text" || task == "image") QVERIFY(parts.first().toObject()["text"].toString().contains("英语"));
     }
+    void screenshotOcr_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto name : {"success", "success-light", "failure-retry", "timeout", "cancel", "missing-config", "change-selection", "close-running"})
+            QTest::newRow(name) << QString(name);
+    }
+    void screenshotOcr() {
+        QFETCH(QString, scenario);
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        QList<QByteArray> requests;
+        QString recognized = QStringLiteral("HELLO 世界\n截图中的文字\n<b>按原样显示</b>\n");
+        for (int i = 0; i < 60; ++i) recognized += QStringLiteral("第 %1 行识别文字\n").arg(i + 1);
+        const QByteArray response = QJsonDocument(QJsonObject{{"choices", QJsonArray{
+            QJsonObject{{"message", QJsonObject{{"content", recognized}}}}}}}).toJson();
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto* socket = server.nextPendingConnection();
+            auto data = std::make_shared<QByteArray>();
+            connect(socket, &QTcpSocket::readyRead, socket, [&, socket, data] {
+                data->append(socket->readAll());
+                const int split = data->indexOf("\r\n\r\n");
+                if (split < 0) return;
+                int size = -1;
+                for (const auto& header : data->left(split).split('\n'))
+                    if (header.toLower().startsWith("content-length:")) size = header.mid(15).trimmed().toInt();
+                if (size < 0 || data->size() < split + 4 + size) return;
+                requests.append(*data);
+                if (scenario == "timeout") return;
+                const bool fail = scenario == "failure-retry" && requests.size() == 1;
+                const QByteArray body = fail ? QByteArray("{}") : response;
+                // 留出等待时间，验证界面响应和重复点击不会发出第二次请求。
+                QTimer::singleShot(100, socket, [socket, body, fail] {
+                    socket->write(QByteArray("HTTP/1.1 ") + (fail ? "401 Unauthorized" : "200 OK") +
+                        "\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(body.size()) +
+                        "\r\nConnection: close\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+            });
+        });
+        SelectionOverlay::Options options;
+        options.ocrConfig.endpoint = QString("http://127.0.0.1:%1/v1").arg(server.serverPort()).toStdString();
+        options.darkTheme = scenario != "success-light";
+        options.ocrConfig.model = "screenshot-vision";
+        options.ocrConfig.apiKey = "fake-key";
+        options.ocrConfig.timeoutMs = scenario == "timeout" ? 100 : 3000;
+        if (scenario == "missing-config") options.ocrConfig.model.clear();
+        QPixmap image(1280, 800); image.fill(QColor("#50627a"));
+        {
+            QPainter p(&image);
+            p.fillRect(QRect(220, 180, 440, 260), Qt::white);
+            p.setPen(Qt::black); QFont font; font.setPixelSize(24); p.setFont(font);
+            p.drawText(QRect(240, 220, 390, 120), Qt::AlignLeft, QStringLiteral("HELLO 世界\n截图中的文字"));
+        }
+        auto overlay = std::make_unique<SelectionOverlay>(image, 1, nullptr, options);
+        overlay->resize(1280, 800);
+        overlay->frozenLogicalRect_ = overlay->rect();
+        overlay->selectionRect_ = QRect(220, 180, 440, 260);
+        overlay->hasSelection_ = true;
+        overlay->show();
+        QCoreApplication::processEvents();
+        const QImage expected = overlay->buildFinalImage();
+        auto clickOcr = [&] {
+            QTimer::singleShot(0, this, [&] {
+                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (box) box->button(scenario == "cancel" ? QMessageBox::No : QMessageBox::Yes)->click();
+            });
+            QTest::mouseClick(overlay.get(), Qt::LeftButton, Qt::NoModifier,
+                overlay->toolbarButtonRect(overlay->currentSelection(), 9).center());
+        };
+        clickOcr();
+        QVERIFY(overlay->ocrPanel_->isVisible());
+        QVERIFY(overlay->rect().contains(overlay->ocrPanel_->geometry()));
+        QVERIFY(!overlay->ocrPanel_->geometry().intersects(overlay->currentSelection()));
+        QVERIFY(!overlay->ocrPanel_->geometry().intersects(overlay->toolbarRect(overlay->currentSelection())));
+        QVERIFY(overlay->isVisible()); QVERIFY(!overlay->outcome().accepted);
+        if (scenario == "missing-config" || scenario == "cancel") {
+            QVERIFY(!overlay->ocrBusy_); QCOMPARE(requests.size(), 0);
+            QVERIFY(overlay->ocrStatus_->text().contains(scenario == "cancel" ? "已取消" : "设置"));
+            QVERIFY(!overlay->ocrCopy_->isEnabled());
+            return;
+        }
+        QVERIFY(overlay->ocrBusy_); QVERIFY(!overlay->ocrRetry_->isEnabled());
+        QTest::mouseClick(overlay.get(), Qt::LeftButton, Qt::NoModifier,
+            overlay->toolbarButtonRect(overlay->currentSelection(), 9).center());
+        QTRY_COMPARE(requests.size(), 1);
+        if (scenario == "close-running") {
+            overlay.reset();
+            QTest::qWait(200);  // 结束截图后，后台结果不得访问已关闭的窗口。
+            return;
+        }
+        if (scenario == "change-selection") {
+            overlay->selectionRect_.translate(5, 0); overlay->update();
+            QTRY_VERIFY(!overlay->ocrBusy_);
+            QVERIFY(!overlay->ocrPanel_->isVisible());
+            return;
+        }
+        QTRY_VERIFY(!overlay->ocrBusy_);
+        const auto request = requests.first();
+        QVERIFY(request.startsWith("POST /v1/chat/completions HTTP/1.1"));
+        QVERIFY(request.contains("Authorization: Bearer fake-key"));
+        const auto body = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4)).object();
+        QCOMPARE(body["model"].toString(), QString("screenshot-vision"));
+        const auto parts = body["messages"].toArray().first().toObject()["content"].toArray();
+        const QString url = parts.last().toObject()["image_url"].toObject()["url"].toString();
+        const auto sent = QImage::fromData(QByteArray::fromBase64(url.mid(url.indexOf(',') + 1).toLatin1()));
+        QCOMPARE(sent.convertToFormat(QImage::Format_RGBA8888), expected.convertToFormat(QImage::Format_RGBA8888));
+        if (scenario == "timeout") {
+            QVERIFY(overlay->ocrStatus_->text().contains("超时"));
+            QVERIFY(!overlay->ocrCopy_->isEnabled());
+            return;
+        }
+        if (scenario == "failure-retry") {
+            QVERIFY(overlay->ocrStatus_->text().contains("401"));
+            QVERIFY(!overlay->ocrCopy_->isEnabled());
+            QTimer::singleShot(0, this, [] {
+                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (box) box->button(QMessageBox::Yes)->click();
+            });
+            QTest::mouseClick(overlay->ocrRetry_, Qt::LeftButton);
+            QTRY_VERIFY(!overlay->ocrBusy_);
+            QCOMPARE(requests.size(), 2);
+        }
+        QCOMPARE(overlay->ocrText_->toPlainText(), recognized.trimmed());
+        QVERIFY(overlay->ocrCopy_->isEnabled());
+        QTest::mouseClick(overlay->ocrCopy_, Qt::LeftButton);
+        QCOMPARE(QApplication::clipboard()->text(), recognized.trimmed());
+        overlay->ocrText_->setFocus();
+        QTest::keyClick(overlay->ocrText_, Qt::Key_T);
+        QVERIFY(!overlay->toolChosen_); // 在结果区打字不能切换截图工具。
+        QTest::keyClick(overlay->ocrText_, Qt::Key_Return);
+        QVERIFY(!overlay->outcome().accepted);
+        QVERIFY(overlay->ocrText_->verticalScrollBar()->maximum() > 0);
+        overlay->ocrText_->verticalScrollBar()->setValue(overlay->ocrText_->verticalScrollBar()->maximum());
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty() && scenario.startsWith("success")) {
+            overlay->ocrText_->verticalScrollBar()->setValue(0);
+            QVERIFY(overlay->grab().save(folder + (scenario == "success" ? "/screenshot-ocr.png" : "/screenshot-ocr-light.png")));
+        }
+        QTest::mouseClick(overlay->findChild<QToolButton*>("ocrClose"), Qt::LeftButton);
+        QVERIFY(!overlay->ocrPanel_->isVisible()); QVERIFY(overlay->isVisible());
+    }
+    void screenshotOcrPanelFits_data() {
+        QTest::addColumn<QSize>("size"); QTest::addColumn<QRect>("selection");
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("right") << QSize(1280, 800) << QRect(120, 120, 440, 260) << true;
+        QTest::newRow("left") << QSize(1280, 800) << QRect(800, 120, 440, 260) << false;
+        QTest::newRow("below") << QSize(1280, 800) << QRect(10, 50, 1250, 180) << true;
+        QTest::newRow("above") << QSize(1280, 800) << QRect(10, 550, 1250, 180) << false;
+        QTest::newRow("fullscreen") << QSize(1280, 800) << QRect(0, 0, 1280, 800) << true;
+        QTest::newRow("small") << QSize(480, 320) << QRect(0, 0, 480, 320) << false;
+        QTest::newRow("narrow") << QSize(320, 480) << QRect(0, 0, 320, 480) << true;
+    }
+    void screenshotOcrPanelFits() {
+        QFETCH(QSize, size); QFETCH(QRect, selection); QFETCH(bool, dark);
+        QPixmap image(size); image.fill(QColor("#50627a"));
+        SelectionOverlay::Options options; options.darkTheme = dark;
+        SelectionOverlay overlay(image, 1, nullptr, options);
+        overlay.resize(size); overlay.frozenLogicalRect_ = overlay.rect();
+        overlay.selectionRect_ = selection; overlay.hasSelection_ = true;
+        overlay.show(); QCoreApplication::processEvents();
+        overlay.startOcr();
+        QCoreApplication::processEvents();
+        QVERIFY(overlay.ocrPanel_->isVisible());
+        QVERIFY(overlay.rect().contains(overlay.ocrPanel_->geometry()));
+        QVERIFY(!overlay.toolbarRect(selection).intersects(overlay.ocrPanel_->geometry()));
+        if (selection.size() != size) QVERIFY(!selection.intersects(overlay.ocrPanel_->geometry()));
+        for (auto* child : {static_cast<QWidget*>(overlay.ocrText_), static_cast<QWidget*>(overlay.ocrCopy_), static_cast<QWidget*>(overlay.ocrRetry_)}) {
+            const QRect r(child->mapTo(overlay.ocrPanel_, QPoint()), child->size());
+            QVERIFY(overlay.ocrPanel_->rect().contains(r));
+        }
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty()) QVERIFY(overlay.grab().save(folder + "/ocr-panel-" + QTest::currentDataTag() + ".png"));
+    }
     void toolbarFits_data() {
         QTest::addColumn<int>("width");
         QTest::addColumn<int>("height");
@@ -670,8 +952,8 @@ private slots:
             SelectionOverlay::Options options; options.selectImage = true;
             SelectionOverlay overlay(image, 1, nullptr, options);
             overlay.show();
-            const int index = action == SelectionOverlay::Action::SaveFile ? 11 :
-                              action == SelectionOverlay::Action::Copy ? 12 : 10;
+            const int index = action == SelectionOverlay::Action::SaveFile ? 12 :
+                              action == SelectionOverlay::Action::Copy ? 13 : 11;
             QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier,
                               overlay.toolbarButtonRect(overlay.currentSelection(), index).center());
             QVERIFY(overlay.outcome().accepted);

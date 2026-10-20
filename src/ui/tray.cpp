@@ -310,6 +310,7 @@ bool TrayController::start() {
                     options.paletteSize = paletteSize_;
                     options.eraserUndoable = eraserUndoable_;
                     options.promoteWindow = makeOverlayPromoter();
+                    options.ocrConfig = ocrConfig_;
                     const auto result = SelectionOverlay::run(QPixmap::fromImage(image), 1.0,
                         QGuiApplication::screenAt(QCursor::pos()), options);
                     if (result.accepted && !result.outputImage.isNull()) {
@@ -892,6 +893,7 @@ QString TrayController::captureWithSelection(QString* error) {
     overlayOptions.darkTheme = darkTheme_;
     overlayOptions.eraserUndoable = eraserUndoable_;
     overlayOptions.promoteWindow = makeOverlayPromoter();
+    overlayOptions.ocrConfig = ocrConfig_;
 
     const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
         QPixmap::fromImage(image), scale, screen, overlayOptions);
@@ -954,6 +956,7 @@ QString TrayController::whiteboardWithSelection(const QColor& background,
     overlayOptions.darkTheme = darkTheme_;
     overlayOptions.eraserUndoable = eraserUndoable_;
     overlayOptions.promoteWindow = makeOverlayPromoter();
+    overlayOptions.ocrConfig = ocrConfig_;
     const SelectionOverlay::Outcome outcome = SelectionOverlay::run(
         QPixmap::fromImage(board), scale, screen, overlayOptions);
     if (!outcome.accepted) {
