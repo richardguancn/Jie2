@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.16)
 
 # 必须在 project() 之前设置。取值 14.0 是两条约束的交集：
 #   1) Qt 6.11 的二进制构建于 macOS 14.0，部署目标低于它会产生链接告警与运行风险；
@@ -18,7 +18,8 @@ project(jie2
     DESCRIPTION "J2 — 跨平台截图 / 标注 / 贴图工具"
     LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+# 使用 C++17 标准，以兼容银河麒麟 V10 / 统信等国产系统的 GCC 9/10 编译器
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -42,17 +43,32 @@ add_subdirectory(src/core)
 add_subdirectory(src/platform)
 add_subdirectory(src/tools)
 
-# UI 层需要 Qt 6。若环境没有 Qt6（例如纯内核 CI 容器），允许只构建下两层。
+# UI 层需要 Qt。优先使用 Qt6；若缺失则自动回退至 Qt5（适配银河麒麟 V10 等老国产系统）。
 # Network 供 M5 的 OpenAI 兼容端点使用。
 find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Network)
 if(Qt6_FOUND)
+    set(JIE2_HAVE_QT ON)
+    set(JIE2_QT_VERSION_MAJOR 6)
+    set(JIE2_QT_LIBRARIES Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+    message(STATUS "jie2: Qt ${Qt6_VERSION} found — building UI layer")
+else()
+    find_package(Qt5 5.12 QUIET COMPONENTS Core Gui Widgets Network)
+    if(Qt5_FOUND)
+        set(JIE2_HAVE_QT ON)
+        set(JIE2_QT_VERSION_MAJOR 5)
+        set(JIE2_QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network)
+        message(STATUS "jie2: Qt ${Qt5_VERSION} (Qt5 fallback) found — building UI layer")
+    else()
+        set(JIE2_HAVE_QT OFF)
+        message(WARNING "jie2: Neither Qt6 nor Qt5 found — building core/platform only")
+    endif()
+endif()
+
+if(JIE2_HAVE_QT)
     # Q_OBJECT 需要 moc；AUTOMOC 必须在创建目标之前启用。
     set(CMAKE_AUTOMOC ON)
     set(CMAKE_AUTORCC ON)
     add_subdirectory(src/ui)
-    message(STATUS "jie2: Qt ${Qt6_VERSION} found — building UI layer")
-else()
-    message(WARNING "jie2: Qt6 not found — building core/platform only")
 endif()
 
 if(JIE2_BUILD_TESTS)

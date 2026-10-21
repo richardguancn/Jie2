@@ -31,10 +31,7 @@ target_include_directories(jie2 PRIVATE
 target_link_libraries(jie2 PRIVATE
     jie2_platform
     jie2_core
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Widgets
-    Qt6::Network
+    ${JIE2_QT_LIBRARIES}
 )
 
 

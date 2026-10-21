@@ -224,10 +224,19 @@ std::string defaultHotkeyText(char key) {
     std::string text;
 #if defined(__APPLE__)
     text = "cmd+alt+";
+    text.push_back(key);
+#elif defined(__linux__)
+    // Linux（银河麒麟 UKUI / Ubuntu 等）：Ctrl+Alt+T 默认为系统终端快捷键。
+    // 为避免 XGrabKey 发生 BadAccess 冲突导致热键失效，Linux 默认将截图键设为 F1（对齐 Snipaste 习惯）。
+    if (key == 't' || key == 'T') {
+        return "f1";
+    }
+    text = "ctrl+alt+";
+    text.push_back(key);
 #else
     text = "ctrl+alt+";
-#endif
     text.push_back(key);
+#endif
     return text;
 }
 

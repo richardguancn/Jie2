@@ -37,6 +37,23 @@ int detectSystemDark() {
         return 0;
     }
 #elif defined(Q_OS_LINUX)
+    // 银河麒麟 UKUI 桌面深浅色主题探测
+    {
+        QProcess process;
+        process.start(QStringLiteral("gsettings"),
+                      {QStringLiteral("get"),
+                       QStringLiteral("org.ukui.style"),
+                       QStringLiteral("style-name")});
+        if (process.waitForFinished(500) && process.exitCode() == 0) {
+            const QByteArray out = process.readAllStandardOutput().toLower();
+            if (out.contains("dark") || out.contains("black")) {
+                return 1;
+            }
+            if (out.contains("white") || out.contains("light") || out.contains("default")) {
+                return 0;
+            }
+        }
+    }
     {
         QProcess process;
         process.start(QStringLiteral("gsettings"),

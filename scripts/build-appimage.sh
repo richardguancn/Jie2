@@ -67,9 +67,41 @@ cp "$APP_DIR/jie2.desktop" "$APP_DIR/usr/share/applications/jie2.desktop"
 bash "$ROOT/packaging/make-icon.sh" "$APP_DIR/usr/share/icons/hicolor/256x256/apps/jie2.png" 256
 cp "$APP_DIR/usr/share/icons/hicolor/256x256/apps/jie2.png" "$APP_DIR/jie2.png"
 
+USE_QT5=0
+if ldd "$JIE2_BIN" 2>/dev/null | grep -q "libQt5Widgets"; then
+    USE_QT5=1
+fi
+
+if [ "$USE_QT5" -eq 1 ]; then
 cat > "$APP_DIR/AppRun" <<'EOF'
 #!/bin/sh
-# 「J2」AppImage 入口
+# 「J2」AppImage 入口 (Qt5 构建版本)
+HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
+
+missing=""
+for lib in libQtWidgets.so.5 libQtGui.so.5 libQtCore.so.5 libX11.so.6; do
+    if ! ldconfig -p 2>/dev/null | grep -q "$lib"; then
+        missing="$missing $lib"
+    fi
+done
+if [ -n "$missing" ]; then
+    echo "J2 需要宿主提供以下运行库（AppImage 不捆绑 Qt）：" >&2
+    echo "  缺失:$missing" >&2
+    echo >&2
+    echo "银河麒麟/统信/Debian/Ubuntu：" >&2
+    echo "  sudo apt install libqt5widgets5 libqt5gui5 libqt5core5a libqt5network5 libx11-6" >&2
+    echo "Fedora/RHEL/openEuler：" >&2
+    echo "  sudo dnf install qt5-qtbase qt5-qtbase-gui" >&2
+    exit 1
+fi
+
+exec "$HERE/usr/bin/jie2" "$@"
+EOF
+else
+cat > "$APP_DIR/AppRun" <<'EOF'
+#!/bin/sh
+# 「J2」AppImage 入口 (Qt6 构建版本)
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
 
@@ -85,8 +117,10 @@ if [ -n "$missing" ]; then
     echo "J2 需要宿主提供以下运行库（AppImage 不捆绑 Qt）：" >&2
     echo "  缺失:$missing" >&2
     echo >&2
-    echo "Debian/Ubuntu（含麒麟/统信等衍生版）：" >&2
+    echo "Debian/Ubuntu（如源中包含 Qt6）：" >&2
     echo "  sudo apt install libqt6widgets6 libqt6gui6 libqt6core6 libqt6network6 libx11-6" >&2
+    echo "银河麒麟 V10 / 统信等仅有 Qt5 的系统：" >&2
+    echo "  请使用系统自带 Qt5 构建的 jie2 deb 包或便携版本" >&2
     echo "Fedora/RHEL：" >&2
     echo "  sudo dnf install qt6-qtbase qt6-qtbase-gui" >&2
     exit 1
@@ -94,6 +128,7 @@ fi
 
 exec "$HERE/usr/bin/jie2" "$@"
 EOF
+fi
 chmod +x "$APP_DIR/AppRun"
 
 # ---- 2) 生成自解压头 ----

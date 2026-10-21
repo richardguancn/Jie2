@@ -187,7 +187,11 @@ protected:
         if (watched == view()->viewport() && event->type() == QEvent::MouseButtonRelease) {
             auto* mouse = static_cast<QMouseEvent*>(event);
             if (mouse->button() == Qt::LeftButton) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                 const auto index = view()->indexAt(mouse->position().toPoint());
+#else
+                const auto index = view()->indexAt(mouse->pos());
+#endif
                 if (index.isValid()) { setCurrentIndex(index.row()); hidePopup(); return true; }
             }
         }

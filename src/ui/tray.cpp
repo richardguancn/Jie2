@@ -12,7 +12,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
 #include <QColorSpace>
+#endif
 #include <QCryptographicHash>
 #include <QCursor>
 #include <QDateTime>
@@ -371,6 +373,25 @@ bool TrayController::start() {
 #endif
     tray_->show();
 
+#if defined(Q_OS_LINUX)
+    // 银河麒麟 UKUI 等 Linux 桌面面板托盘服务可能延迟就绪。
+    // 若初始未检测到托盘，定时轮询重试直到托盘可用并重新 show。
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        auto* retryTimer = new QTimer(this);
+        retryTimer->setInterval(1500);
+        connect(retryTimer, &QTimer::timeout, this, [this, retryTimer]() {
+            if (QSystemTrayIcon::isSystemTrayAvailable()) {
+                if (tray_ != nullptr) {
+                    tray_->show();
+                }
+                retryTimer->stop();
+                retryTimer->deleteLater();
+            }
+        });
+        retryTimer->start();
+    }
+#endif
+
     registerHotkey();
 
     // 平台能力受限时第一时间如实提示（评估报告 3.2 要求降级对用户可见）。
@@ -555,7 +576,9 @@ QString TrayController::deliverSelection(const SelectionOverlay::Outcome& outcom
         return saveAndCopy(outcome.outputImage, error, true, applyOutputOptions);
     pendingFlyRect_ = {};
     QImage image = applyOutputOptions ? decorateForOutput(outcome.outputImage) : outcome.outputImage;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     image.setColorSpace(QColorSpace::SRgb);
+#endif
     if (outcome.action == Action::SaveFile) {
         QString path = QFileDialog::getSaveFileName(nullptr, QStringLiteral("保存截图"),
             QDir(captureDirectory()).filePath(captureFileName()), QStringLiteral("PNG 图像 (*.png);;JPEG 图像 (*.jpg)"));
@@ -612,7 +635,9 @@ QString TrayController::saveAndCopy(const QImage& image, QString* error,
     }
     // 色彩管理（M1 收尾项）：像素语义本就是 sRGB（实测与系统工具差异≤1），
     // 这里补上颜色空间标记，让严格做色彩管理的程序正确解释本文件。
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     output.setColorSpace(QColorSpace::SRgb);
+#endif
 
     // 与 Snipaste 的默认行为一致：截图落点之一是剪贴板。
     // 剪贴板始终写入（--no-save 也只跳过落盘，不影响剪贴板）。
@@ -2173,6 +2198,33 @@ void TrayController::registerHotkey() {
     } else {
         qWarning().noquote()
             << QStringLiteral("[jie2] 截图热键注册失败：%1").arg(hotkeyError_);
+#if defined(Q_OS_LINUX)
+        // 银河麒麟/Linux 容错：若配置的快捷键（如 Ctrl+Alt+T）被系统终端占用，
+        // 自动尝试回退注册 F1 兜底，避免用户完全无法唤起截图。
+        if (snipHotkeySpec_.key != platform::Key::F1) {
+            platform::HotkeySpec fallbackSpec;
+            fallbackSpec.id = snipHotkeySpec_.id;
+            fallbackSpec.modifiers = 0;
+            fallbackSpec.key = platform::Key::F1;
+            std::string fallbackErr;
+            if (platform_->grabHotkey(fallbackSpec, &TrayController::hotkeyThunk, this, &fallbackErr)) {
+                snipHotkeySpec_ = fallbackSpec;
+                hotkeyRegistered_ = true;
+                hotkeyError_.clear();
+                qInfo().noquote() << QStringLiteral("[jie2] 原截图热键被占用，已自动启用备用热键 F1");
+                if (tray_ != nullptr && tray_->isSystemTrayAvailable()) {
+                    tray_->showMessage(QStringLiteral("J2 截图热键已调整"),
+                                       QStringLiteral("原设热键被系统占用，已自动启用 F1 作为截图热键"),
+                                       QSystemTrayIcon::Information, 5000);
+                }
+            }
+        }
+#endif
+        if (!hotkeyRegistered_ && tray_ != nullptr && tray_->isSystemTrayAvailable()) {
+            tray_->showMessage(QStringLiteral("J2 截图热键注册失败"),
+                               QStringLiteral("快捷键被其他程序占用（%1），请在设置中更改").arg(hotkeyError_),
+                               QSystemTrayIcon::Warning, 5000);
+        }
     }
 
     // 贴图热键。

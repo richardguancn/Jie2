@@ -59,6 +59,19 @@ bash packaging/make-icon.sh "$STAGE/usr/share/icons/hicolor/256x256/apps/jie2.pn
 
 # control 文件
 INSTALLED_SIZE="$(du -sk "$STAGE/usr" | awk '{print $1}')"
+
+# 智能检测实际链接的 Qt 版本：若使用 Qt5 构建，Depends 声明 Qt5 运行库；若 Qt6，声明 Qt6 运行库；
+# 且通过 '|' 兼容银河麒麟 V10 / 统信 UOS / Debian / Ubuntu 多版本环境。
+QT_DEPS="libx11-6, libc6"
+if ldd "$BUILD_DIR/src/ui/jie2" 2>/dev/null | grep -q "libQt5Widgets"; then
+    QT_DEPS="libqt5widgets5 (>= 5.12), libqt5gui5 (>= 5.12), libqt5core5a (>= 5.12), libqt5network5 (>= 5.12), $QT_DEPS"
+elif ldd "$BUILD_DIR/src/ui/jie2" 2>/dev/null | grep -q "libQt6Widgets"; then
+    QT_DEPS="libqt6widgets6 | qt6-base, libqt6gui6, libqt6core6, libqt6network6, $QT_DEPS"
+else
+    # 兜底：双向兼容声明
+    QT_DEPS="libqt6widgets6 | libqt5widgets5 | qt6-base, libqt6gui6 | libqt5gui5, libqt6core6 | libqt5core5a, libqt6network6 | libqt5network5, $QT_DEPS"
+fi
+
 cat > "$STAGE/DEBIAN/control" <<EOF
 Package: jie2
 Version: ${APP_VERSION}
@@ -66,7 +79,7 @@ Section: utils
 Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libqt6widgets6 | qt6-base, libqt6gui6, libqt6core6, libqt6network6, libx11-6, libc6
+Depends: ${QT_DEPS}
 Maintainer: jie2
 Description: J2 — 截图 / 标注 / 贴图工具
  跨平台截图工具：区域/全屏截图、标注（矩形/椭圆/箭头/铅笔/马克笔/
