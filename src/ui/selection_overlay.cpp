@@ -1339,18 +1339,6 @@ void SelectionOverlay::startOcr() {
     }
     ocrBusy_ = true;
     ocrRetry_->setEnabled(false);
-    ocrStatus_->setText(QStringLiteral("等待确认发送选区图片…"));
-    const auto answer = QMessageBox::warning(this, QStringLiteral("文字识别将上传图像"),
-        QStringLiteral("识别时会把当前选区的图片发送至：\n%1\n\n是否继续？")
-            .arg(QString::fromStdString(ocrConfig_.endpoint)),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes) {
-        ocrBusy_ = false;
-        ocrRetry_->setEnabled(true);
-        ocrStatus_->setText(QStringLiteral("已取消识别，图片未发送。"));
-        update();
-        return;
-    }
     ocrStatus_->setText(QStringLiteral("正在识别，请稍候…"));
     update();
     const auto result = std::make_shared<core::OcrResult>();

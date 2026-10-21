@@ -619,7 +619,7 @@ private slots:
     }
     void screenshotOcr_data() {
         QTest::addColumn<QString>("scenario");
-        for (const auto name : {"success", "success-light", "failure-retry", "timeout", "cancel", "missing-config", "change-selection", "close-running"})
+        for (const auto name : {"success", "success-light", "failure-retry", "timeout", "missing-config", "change-selection", "close-running"})
             QTest::newRow(name) << QString(name);
     }
     void screenshotOcr() {
@@ -678,10 +678,6 @@ private slots:
         QCoreApplication::processEvents();
         const QImage expected = overlay->buildFinalImage();
         auto clickOcr = [&] {
-            QTimer::singleShot(0, this, [&] {
-                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
-                if (box) box->button(scenario == "cancel" ? QMessageBox::No : QMessageBox::Yes)->click();
-            });
             QTest::mouseClick(overlay.get(), Qt::LeftButton, Qt::NoModifier,
                 overlay->toolbarButtonRect(overlay->currentSelection(), 9).center());
         };
@@ -691,9 +687,9 @@ private slots:
         QVERIFY(!overlay->ocrPanel_->geometry().intersects(overlay->currentSelection()));
         QVERIFY(!overlay->ocrPanel_->geometry().intersects(overlay->toolbarRect(overlay->currentSelection())));
         QVERIFY(overlay->isVisible()); QVERIFY(!overlay->outcome().accepted);
-        if (scenario == "missing-config" || scenario == "cancel") {
+        if (scenario == "missing-config") {
             QVERIFY(!overlay->ocrBusy_); QCOMPARE(requests.size(), 0);
-            QVERIFY(overlay->ocrStatus_->text().contains(scenario == "cancel" ? "已取消" : "设置"));
+            QVERIFY(overlay->ocrStatus_->text().contains("设置"));
             QVERIFY(!overlay->ocrCopy_->isEnabled());
             return;
         }
@@ -730,10 +726,6 @@ private slots:
         if (scenario == "failure-retry") {
             QVERIFY(overlay->ocrStatus_->text().contains("401"));
             QVERIFY(!overlay->ocrCopy_->isEnabled());
-            QTimer::singleShot(0, this, [] {
-                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
-                if (box) box->button(QMessageBox::Yes)->click();
-            });
             QTest::mouseClick(overlay->ocrRetry_, Qt::LeftButton);
             QTRY_VERIFY(!overlay->ocrBusy_);
             QCOMPARE(requests.size(), 2);
