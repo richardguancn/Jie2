@@ -43,7 +43,7 @@ jobs:
             libgl1-mesa-dev libx11-dev libxrandr-dev libxkbcommon-dev \
             libdbus-1-dev zlib1g-dev \
             libwayland-dev wayland-protocols \
-            rpm xvfb
+            rpm xvfb desktop-file-utils librsvg2-bin
           # 关键依赖是否到位：缺失时 CMake 会静默降级（少 jie2-line、
           # 少 Wayland 热键），所以这里把结论打印出来便于对照。
           pkg-config --modversion wayland-client wayland-protocols dbus-1
@@ -87,6 +87,20 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.AppImage
+
+  linux-kylin-arm64:
+    name: 麒麟 V10 ARM64（Qt5）构建与打包
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: 在旧版 ARM64 环境构建、测试与打包
+        run: bash scripts/build-kylin-arm64.sh --docker
+      - name: 上传麒麟 ARM64 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: kylin-v10-arm64-package
+          if-no-files-found: error
+          path: dist/kylin-v10-arm64/*.deb
 
   macos:
     name: macOS 构建与打包（zip / dmg）
@@ -235,7 +249,7 @@ jobs:
 
   release:
     name: 创建或补全 Release
-    needs: [linux, macos, windows]
+    needs: [linux, linux-kylin-arm64, macos, windows]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,12 @@
 #include "platform/hotkey.h"
 
 namespace jie2::platform {
+
+struct ElementLocator {
+    // 屏幕逻辑坐标；由小到大返回鼠标下的元素及其父级范围。
+    std::function<std::vector<core::Rect>(core::Point)> rectanglesAt;
+    bool accessibilityRequired = false;
+};
 
 /// 平台集成层接口。
 ///
@@ -63,6 +70,12 @@ public:
     /// 错误的吸附比不吸附更烦人（评估报告 1.5 的窗口吸附要求）。
     virtual std::vector<core::Rect> windowRects() const = 0;
 
+    // 在遮罩出现前建立快照，避免把截图遮罩本身当成目标。
+    // 回调须可在后台线程调用，且不依赖 Platform 对象的生命周期。
+    virtual ElementLocator createElementLocator() const { return {}; }
+    // 仅由用户点击权限入口时调用，不在截图时主动弹出系统权限提示。
+    virtual bool requestElementAccess() { return false; }
+
     // ---- 系统文字识别（M5：OCR 的"系统能力"后端）----
 
     // ---- 遮罩窗口层级提升（M1 增补：远程桌面 / 全屏应用场景）----
@@ -100,8 +113,19 @@ public:
 /// 未知平台返回"能力全为 Unknown"的空实现，而不是崩溃或静默假装可用。
 std::unique_ptr<Platform> createPlatform();
 #if defined(__APPLE__)
-/// 在 Qt 全局逻辑坐标处显示原生 macOS 菜单；nativeMenu 为借用的 NSMenu。
-void popupMacContextMenu(void* nativeMenu, int globalX, int globalY);
+struct ContextMenuItem {
+    int id = -1;
+    std::string text;
+    std::string shortcut;
+    std::string tooltip;
+    bool enabled = true;
+    bool checked = false;
+    bool separator = false;
+    std::vector<unsigned char> iconPng;
+    std::vector<ContextMenuItem> children;
+};
+/// 使用系统 NSMenu 跟踪选择；返回选中项 id，取消返回 -1。
+int popupMacContextMenu(const std::vector<ContextMenuItem>& items, int globalX, int globalY);
 #endif
 
 } // namespace jie2::platform

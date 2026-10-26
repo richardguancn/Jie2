@@ -12,9 +12,9 @@
 |---|---|
 | 平台 | macOS 14+ / Windows 10+ / Linux（X11 与 Wayland） |
 | 安装包 | dmg + zip、zip（免安装）、deb + rpm + AppImage |
-| 界面技术 | Qt 6 Widgets（全自绘），UI 层可整体替换为 QML |
-| 内核 | 纯 C++20，不依赖 Qt 与任何系统 API，可脱离 GUI 单测 |
-| 依赖 | macOS / Windows 包自包含 Qt；Linux 包用发行版自带 Qt6 |
+| 界面技术 | Qt 6 / Qt 5.12+ Widgets（全自绘），UI 层可整体替换为 QML |
+| 内核 | 纯 C++17，不依赖 Qt 与任何系统 API，可脱离 GUI 单测 |
+| 依赖 | macOS / Windows 包自包含 Qt；Linux 包用发行版自带 Qt，麒麟 V10 ARM64 使用 Qt5 |
 
 ## 界面
 
@@ -57,7 +57,10 @@
 **Windows（x64）** 下载 zip 解压到任意目录，双击 `jie2.exe`。常驻托盘、不出主窗口；
 不写注册表、不装服务，删除文件夹即卸载。
 
-**Debian / Ubuntu / 麒麟 / 统信** `sudo apt install ./jie2_0.0.2_amd64.deb`
+**Debian / Ubuntu / 统信（x86_64）** `sudo apt install ./jie2_0.0.2_amd64.deb`
+
+**银河麒麟桌面 V10 SP1（ARM64）** 使用专用 Qt5 安装包，构建与验证说明见
+[麒麟 V10 ARM64 适配说明](docs/kylin-v10-arm64.md)。ARM64 设备不能安装上面的 amd64 包。
 **Fedora / RHEL / openEuler** `sudo dnf install ./jie2-0.0.2-1.x86_64.rpm`
 **其他 x86_64 Linux** `chmod +x jie2-0.0.2-x86_64.AppImage && ./jie2-0.0.2-x86_64.AppImage`
 
@@ -163,6 +166,15 @@ cmake --build build-macos -j
 
 ### Linux（含 aarch64）
 
+以下命令适用于提供 Qt6 的较新发行版。麒麟 V10 ARM64 请使用：
+
+```bash
+bash scripts/build-kylin-arm64.sh --docker
+```
+
+生成的安装包位于 `dist/kylin-v10-arm64/`。构建固定使用 Qt5，并运行测试和兼容性检查；
+这是基于旧版 ARM64 Linux 的验证，不代表已经通过麒麟 UKUI 实机验收。
+
 ```bash
 sudo apt install build-essential cmake qt6-base-dev qt6-qpa-plugins \
     libgl1-mesa-dev libx11-dev libxrandr-dev libxkbcommon-dev \
@@ -188,7 +200,8 @@ cmake -S . -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-windows
 ```
 
-Qt6 缺失时仍可构建 `core` / `platform` / `tools` / `tests`（UI 层自动跳过）。
+Qt6 缺失时自动尝试 Qt5 5.12+；两者均缺失时只构建 `core` / `platform` / `tools` / `tests`。
+可以用 `-DJIE2_QT_MAJOR_VERSION=5` 明确选择 Qt5，用 `-DJIE2_REQUIRE_UI=ON` 要求界面必须构建成功。
 
 ## 打包与发布
 

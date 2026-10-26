@@ -8,13 +8,23 @@ namespace jie2::core {
 struct Point {
     int x = 0;
     int y = 0;
-    friend constexpr bool operator==(const Point&, const Point&) = default;
+    friend constexpr bool operator==(const Point& a, const Point& b) {
+        return a.x == b.x && a.y == b.y;
+    }
+    friend constexpr bool operator!=(const Point& a, const Point& b) {
+        return !(a == b);
+    }
 };
 
 struct Size {
     int width = 0;
     int height = 0;
-    friend constexpr bool operator==(const Size&, const Size&) = default;
+    friend constexpr bool operator==(const Size& a, const Size& b) {
+        return a.width == b.width && a.height == b.height;
+    }
+    friend constexpr bool operator!=(const Size& a, const Size& b) {
+        return !(a == b);
+    }
 };
 
 /// 以左上角为原点的整数矩形（像素坐标，右下开区间）。
@@ -42,7 +52,12 @@ struct Rect {
         return {nx, ny, nr > nx ? nr - nx : 0, nb > ny ? nb - ny : 0};
     }
 
-    friend constexpr bool operator==(const Rect&, const Rect&) = default;
+    friend constexpr bool operator==(const Rect& a, const Rect& b) {
+        return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+    }
+    friend constexpr bool operator!=(const Rect& a, const Rect& b) {
+        return !(a == b);
+    }
 };
 
 } // namespace jie2::core

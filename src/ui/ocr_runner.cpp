@@ -374,10 +374,10 @@ core::OcrResult OcrRunner::runOpenAiCompatible(const core::OcrConfig& config,
     const QString endpoint = QString::fromStdString(config.endpoint);
     const QString model = QString::fromStdString(config.model);
     if (endpoint.trimmed().isEmpty()) {
-        return core::OcrResult::failure("未配置 ocr.endpoint", "openai-compatible");
+        return core::OcrResult::failure("请先填写服务地址", "openai-compatible");
     }
     if (model.trimmed().isEmpty()) {
-        return core::OcrResult::failure("未配置 ocr.model", "openai-compatible");
+        return core::OcrResult::failure("请先填写模型名称", "openai-compatible");
     }
     QJsonArray content;
     QJsonObject textPart;
@@ -462,12 +462,12 @@ core::OcrResult OcrRunner::runOpenAiCompatible(const core::OcrConfig& config,
 
     const QJsonDocument doc = QJsonDocument::fromJson(payload);
     if (!doc.isObject()) {
-        return core::OcrResult::failure("响应不是 JSON 对象", "openai-compatible");
+        return core::OcrResult::failure("服务返回格式有误（需要 JSON 对象）", "openai-compatible");
     }
     const QJsonArray choices = doc.object().value(QStringLiteral("choices")).toArray();
     if (choices.isEmpty()) {
         return core::OcrResult::failure(
-            "响应缺少 choices（检查 endpoint 是否为 OpenAI 兼容接口）",
+            "服务返回缺少 choices，请检查服务地址",
             "openai-compatible");
     }
     const QString text =
@@ -478,7 +478,7 @@ core::OcrResult OcrRunner::runOpenAiCompatible(const core::OcrConfig& config,
             .value(QStringLiteral("content"))
             .toString();
     if (text.trimmed().isEmpty()) {
-        return core::OcrResult::failure("服务没有返回文字，请检查模型是否支持该任务", "openai-compatible");
+        return core::OcrResult::failure("未收到文字，请检查模型是否支持此操作", "openai-compatible");
     }
     return core::OcrResult::success(text.trimmed().toStdString(), "openai-compatible");
 }

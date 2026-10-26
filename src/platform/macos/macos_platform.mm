@@ -15,22 +15,214 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
+@interface J2ContextMenuTarget : NSObject {
+@public
+    int selected;
+}
+- (void)chooseItem:(NSMenuItem*)sender;
+@end
+
+@implementation J2ContextMenuTarget
+- (void)chooseItem:(NSMenuItem*)sender {
+    selected = static_cast<int>(sender.tag);
+}
+@end
+
 namespace jie2::platform {
 
-void popupMacContextMenu(void* nativeMenu, int globalX, int globalY) {
-    NSMenu* menu = static_cast<NSMenu*>(nativeMenu);
-    if (!menu) return;
-    const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
-    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(globalX, top - globalY) inView:nil];
+namespace {
+NSString* menuString(const std::string& value) {
+    return [NSString stringWithUTF8String:value.c_str()];
+}
+
+void setMenuShortcut(NSMenuItem* item, const std::string& shortcut) {
+    NSString* key = menuString(shortcut);
+    NSEventModifierFlags modifiers = 0;
+    for (NSString* symbol in @[@"⌃", @"⌥", @"⇧", @"⌘"]) {
+        if ([key hasPrefix:symbol]) {
+            if ([symbol isEqualToString:@"⌃"]) modifiers |= NSEventModifierFlagControl;
+            if ([symbol isEqualToString:@"⌥"]) modifiers |= NSEventModifierFlagOption;
+            if ([symbol isEqualToString:@"⇧"]) modifiers |= NSEventModifierFlagShift;
+            if ([symbol isEqualToString:@"⌘"]) modifiers |= NSEventModifierFlagCommand;
+            key = [key substringFromIndex:1];
+        }
+    }
+    NSDictionary* keys = @{@"空格": @" ", @"tab": @"\t", @"enter": @"\r",
+        @"return": @"\r", @"esc": @"\033", @"escape": @"\033", @"backspace": @"\b",
+        @"delete": [NSString stringWithFormat:@"%C", (unichar)NSDeleteFunctionKey],
+        @"insert": [NSString stringWithFormat:@"%C", (unichar)NSInsertFunctionKey],
+        @"home": [NSString stringWithFormat:@"%C", (unichar)NSHomeFunctionKey],
+        @"end": [NSString stringWithFormat:@"%C", (unichar)NSEndFunctionKey],
+        @"pageup": [NSString stringWithFormat:@"%C", (unichar)NSPageUpFunctionKey],
+        @"pagedown": [NSString stringWithFormat:@"%C", (unichar)NSPageDownFunctionKey],
+        @"←": [NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey],
+        @"→": [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey],
+        @"↑": [NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey],
+        @"↓": [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]};
+    NSString* mapped = keys[key.lowercaseString];
+    if (mapped) key = mapped;
+    else if ([key hasPrefix:@"F"] && key.length > 1) {
+        const NSInteger number = [[key substringFromIndex:1] integerValue];
+        if (number >= 1 && number <= 20)
+            key = [NSString stringWithFormat:@"%C", (unichar)(NSF1FunctionKey + number - 1)];
+    }
+    item.keyEquivalent = key.length == 1 ? key.lowercaseString : @"";
+    item.keyEquivalentModifierMask = modifiers;
+}
+
+NSMenu* makeSystemMenu(const std::vector<ContextMenuItem>& items, J2ContextMenuTarget* target) {
+    NSMenu* menu = [[[NSMenu alloc] initWithTitle:@""] autorelease];
+    menu.autoenablesItems = NO;
+    for (const auto& source : items) {
+        if (source.separator) { [menu addItem:NSMenuItem.separatorItem]; continue; }
+        NSMenuItem* item = [[[NSMenuItem alloc] initWithTitle:menuString(source.text)
+            action:@selector(chooseItem:) keyEquivalent:@""] autorelease];
+        item.target = target;
+        item.tag = source.id;
+        item.enabled = source.enabled;
+        item.state = source.checked ? NSControlStateValueOn : NSControlStateValueOff;
+        item.toolTip = menuString(source.tooltip);
+        setMenuShortcut(item, source.shortcut);
+        if (!source.children.empty()) item.submenu = makeSystemMenu(source.children, target);
+        if (!source.iconPng.empty()) {
+            NSData* data = [NSData dataWithBytes:source.iconPng.data() length:source.iconPng.size()];
+            NSImage* image = [[[NSImage alloc] initWithData:data] autorelease];
+            image.size = NSMakeSize(16, 16);
+            item.image = image;
+        }
+        [menu addItem:item];
+    }
+    return menu;
+}
+}
+
+int popupMacContextMenu(const std::vector<ContextMenuItem>& items, int globalX, int globalY) {
+    @autoreleasepool {
+        if (NSScreen.screens.count == 0) return -1;
+        J2ContextMenuTarget* target = [[[J2ContextMenuTarget alloc] init] autorelease];
+        target->selected = -1;
+        NSMenu* menu = makeSystemMenu(items, target);
+        const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+        [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(globalX, top - globalY) inView:nil];
+        return target->selected;
+    }
 }
 
 
 namespace {
+
+struct WindowTarget {
+    core::Rect bounds;
+    int pid = 0;
+};
+
+std::vector<WindowTarget> snapshotWindows() {
+    std::vector<WindowTarget> windows;
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return windows;
+    for (CFIndex i = 0; i < CFArrayGetCount(list); ++i) {
+        auto entry = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(list, i));
+        int layer = -1, pid = 0;
+        auto layerValue = static_cast<CFNumberRef>(CFDictionaryGetValue(entry, kCGWindowLayer));
+        auto pidValue = static_cast<CFNumberRef>(CFDictionaryGetValue(entry, kCGWindowOwnerPID));
+        if (!layerValue || !CFNumberGetValue(layerValue, kCFNumberIntType, &layer) || layer != 0 ||
+            !pidValue || !CFNumberGetValue(pidValue, kCFNumberIntType, &pid) || pid == getpid()) continue;
+        auto boundsValue = static_cast<CFDictionaryRef>(CFDictionaryGetValue(entry, kCGWindowBounds));
+        CGRect bounds{};
+        if (!boundsValue || !CGRectMakeWithDictionaryRepresentation(boundsValue, &bounds) ||
+            bounds.size.width < 40 || bounds.size.height < 40) continue;
+        double alpha = 1;
+        auto alphaValue = static_cast<CFNumberRef>(CFDictionaryGetValue(entry, kCGWindowAlpha));
+        if (alphaValue) CFNumberGetValue(alphaValue, kCFNumberDoubleType, &alpha);
+        if (alpha <= 0) continue;
+        windows.push_back({{static_cast<int>(std::lround(bounds.origin.x)),
+            static_cast<int>(std::lround(bounds.origin.y)), static_cast<int>(std::lround(bounds.size.width)),
+            static_cast<int>(std::lround(bounds.size.height))}, pid});
+    }
+    CFRelease(list);
+    return windows;
+}
+
+core::Rect accessibilityBounds(AXUIElementRef element) {
+    CFTypeRef position = nullptr, size = nullptr;
+    CGPoint origin{};
+    CGSize extent{};
+    AXUIElementSetMessagingTimeout(element, 0.035f);
+    const bool valid = AXUIElementCopyAttributeValue(element, kAXPositionAttribute, &position) == kAXErrorSuccess &&
+        position && CFGetTypeID(position) == AXValueGetTypeID() &&
+        AXValueGetType(static_cast<AXValueRef>(position)) == kAXValueTypeCGPoint &&
+        AXValueGetValue(static_cast<AXValueRef>(position), kAXValueTypeCGPoint, &origin) &&
+        AXUIElementCopyAttributeValue(element, kAXSizeAttribute, &size) == kAXErrorSuccess &&
+        size && CFGetTypeID(size) == AXValueGetTypeID() &&
+        AXValueGetType(static_cast<AXValueRef>(size)) == kAXValueTypeCGSize &&
+        AXValueGetValue(static_cast<AXValueRef>(size), kAXValueTypeCGSize, &extent);
+    if (position) CFRelease(position);
+    if (size) CFRelease(size);
+    if (!valid || !std::isfinite(origin.x) || !std::isfinite(origin.y) ||
+        !std::isfinite(extent.width) || !std::isfinite(extent.height) ||
+        extent.width < 4 || extent.height < 4 || extent.width > 100000 || extent.height > 100000 ||
+        std::abs(origin.x) > 100000 || std::abs(origin.y) > 100000) return {};
+    return {static_cast<int>(std::floor(origin.x)), static_cast<int>(std::floor(origin.y)),
+        static_cast<int>(std::ceil(origin.x + extent.width) - std::floor(origin.x)),
+        static_cast<int>(std::ceil(origin.y + extent.height) - std::floor(origin.y))};
+}
+
+std::vector<core::Rect> elementsInWindow(const WindowTarget& window, core::Point point) {
+    std::vector<core::Rect> bounds;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(180);
+    AXUIElementRef app = AXUIElementCreateApplication(window.pid);
+    AXUIElementSetMessagingTimeout(app, 0.035f);
+    AXUIElementRef element = nullptr;
+    const AXError hit = AXUIElementCopyElementAtPosition(app, point.x, point.y, &element);
+    CFRelease(app);
+    if (hit != kAXErrorSuccess || !element) return bounds;
+    AXUIElementSetMessagingTimeout(element, 0.035f);
+    CFTypeRef owner = nullptr;
+    if (AXUIElementCopyAttributeValue(element, kAXWindowAttribute, &owner) == kAXErrorSuccess && owner) {
+        if (CFGetTypeID(owner) != AXUIElementGetTypeID()) {
+            CFRelease(owner);
+            CFRelease(element);
+            return bounds;
+        }
+        const auto liveWindow = accessibilityBounds(static_cast<AXUIElementRef>(owner));
+        CFRelease(owner);
+        // 截图冻结后窗口若已移动，不把新位置的元素套在旧画面上。
+        if (std::abs(liveWindow.x - window.bounds.x) > 2 ||
+            std::abs(liveWindow.y - window.bounds.y) > 2 ||
+            std::abs(liveWindow.width - window.bounds.width) > 2 ||
+            std::abs(liveWindow.height - window.bounds.height) > 2) {
+            CFRelease(element);
+            return bounds;
+        }
+    }
+    for (int depth = 0; element && depth < 16 && std::chrono::steady_clock::now() < deadline; ++depth) {
+        const auto frame = accessibilityBounds(element).intersected(window.bounds);
+        CFTypeRef role = nullptr;
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute, &role);
+        const bool container = role && (CFEqual(role, kAXWindowRole) || CFEqual(role, kAXApplicationRole));
+        if (role) CFRelease(role);
+        if (!container && frame.contains(point) && frame.width >= 4 && frame.height >= 4 &&
+            frame != window.bounds && std::find(bounds.begin(), bounds.end(), frame) == bounds.end())
+            bounds.push_back(frame);
+        if (container) { CFRelease(element); element = nullptr; break; }
+        CFTypeRef parent = nullptr;
+        const AXError status = AXUIElementCopyAttributeValue(element, kAXParentAttribute, &parent);
+        const bool validParent = status == kAXErrorSuccess && parent &&
+            CFGetTypeID(parent) == AXUIElementGetTypeID() && !CFEqual(element, parent);
+        CFRelease(element);
+        if (!validParent) { if (parent) CFRelease(parent); element = nullptr; break; }
+        element = static_cast<AXUIElementRef>(parent);
+    }
+    if (element) CFRelease(element);
+    return bounds;
+}
 
 // 'JIe2' —— 用于区分本应用注册的热键事件。
 constexpr OSType kHotkeySignature = 0x4A496532;
@@ -472,63 +664,29 @@ public:
 
     std::vector<core::Rect> windowRects() const override {
         std::vector<core::Rect> result;
-        const CFArrayRef windowList = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID);
-        if (windowList == nullptr) {
-            return result;
-        }
-
-        const pid_t ownPid = getpid();
-        const CFIndex count = CFArrayGetCount(windowList);
-        for (CFIndex i = 0; i < count; ++i) {
-            const auto entry =
-                static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(windowList, i));
-            if (entry == nullptr) {
-                continue;
-            }
-
-            // 只要普通窗口层（layer 0）：菜单、提示、悬浮面板都不适合吸附。
-            int layer = -1;
-            const auto layerRef = static_cast<CFNumberRef>(
-                CFDictionaryGetValue(entry, kCGWindowLayer));
-            if (layerRef == nullptr ||
-                !CFNumberGetValue(layerRef, kCFNumberIntType, &layer) ||
-                layer != 0) {
-                continue;
-            }
-
-            // 排除本应用自己的窗口（遮罩、托盘对话框等）。
-            int ownerPid = 0;
-            const auto pidRef = static_cast<CFNumberRef>(
-                CFDictionaryGetValue(entry, kCGWindowOwnerPID));
-            if (pidRef != nullptr &&
-                CFNumberGetValue(pidRef, kCFNumberIntType, &ownerPid) &&
-                ownerPid == ownPid) {
-                continue;
-            }
-
-            const auto boundsRef = static_cast<CFDictionaryRef>(
-                CFDictionaryGetValue(entry, kCGWindowBounds));
-            if (boundsRef == nullptr) {
-                continue;
-            }
-            CGRect rect{};
-            if (!CGRectMakeWithDictionaryRepresentation(boundsRef, &rect)) {
-                continue;
-            }
-            // 过小的窗口（图标、状态项）不参与吸附。
-            if (rect.size.width < 40.0 || rect.size.height < 40.0) {
-                continue;
-            }
-            result.push_back(core::Rect{
-                static_cast<int>(std::lround(rect.origin.x)),
-                static_cast<int>(std::lround(rect.origin.y)),
-                static_cast<int>(std::lround(rect.size.width)),
-                static_cast<int>(std::lround(rect.size.height))});
-        }
-        CFRelease(windowList);
+        for (const auto& window : snapshotWindows()) result.push_back(window.bounds);
         return result;
+    }
+
+    ElementLocator createElementLocator() const override {
+        if (!AXIsProcessTrusted()) return {{}, true};
+        const auto windows = snapshotWindows();
+        return {[windows](core::Point point) {
+            for (const auto& window : windows) {
+                if (window.bounds.contains(point)) return elementsInWindow(window, point);
+            }
+            return std::vector<core::Rect>{};
+        }, false};
+    }
+
+    bool requestElementAccess() override {
+        const void* key = kAXTrustedCheckOptionPrompt;
+        const void* value = kCFBooleanTrue;
+        CFDictionaryRef options = CFDictionaryCreate(nullptr, &key, &value, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        const bool allowed = AXIsProcessTrustedWithOptions(options);
+        CFRelease(options);
+        return allowed;
     }
 
     // ---- 系统文字识别（M5）：macOS Vision ----

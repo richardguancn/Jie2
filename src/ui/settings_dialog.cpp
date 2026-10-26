@@ -150,7 +150,12 @@ private:
 class SettingsChoice final : public QComboBox {
 public:
     SettingsChoice() {
-        auto* choiceStyle = new SettingsChoiceStyle; choiceStyle->setParent(this); setStyle(choiceStyle);
+        // Qt 5.12 会按子对象创建顺序销毁：若样式归选择框所有，弹层析构时
+        // 仍可能访问已经释放的样式。让样式活到选择框全部析构完成后再释放。
+        auto* choiceStyle = new SettingsChoiceStyle;
+        choiceStyle->setParent(qApp);
+        connect(this, &QObject::destroyed, choiceStyle, &QObject::deleteLater);
+        setStyle(choiceStyle);
         auto* list = new QListView; list->setObjectName("settingsChoiceList");
         list->setFrameShape(QFrame::NoFrame); list->setMouseTracking(true);
         list->setUniformItemSizes(true); list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -238,7 +243,7 @@ public:
         connect(increase_, &QToolButton::clicked, this, [this] {
             setFocus(Qt::MouseFocusReason); stepUp();
         });
-        connect(this, &QSpinBox::valueChanged, this, [this] { updateButtons(); });
+        connect(this, qOverload<int>(&QSpinBox::valueChanged), this, [this] { updateButtons(); });
     }
 protected:
     bool event(QEvent* event) override {
@@ -292,7 +297,7 @@ public:
               painter.drawLine(10, 10, 22, 22); painter.drawLine(10, 22, 22, 10); }
             icon.setDevicePixelRatio(2);
             auto* clear = addAction(QIcon(icon), QLineEdit::TrailingPosition);
-            clear->setToolTip("禁用此快捷键");
+            clear->setToolTip("停用按键");
             connect(clear, &QAction::triggered, this, [this] { setText("none"); });
         }
     }
@@ -315,7 +320,7 @@ protected:
                 if (index >= 0) { key = base[index].unicode(); mods |= Qt::ShiftModifier; }
             }
             const auto name = core::keyText(key);
-            if (name.empty()) { setToolTip("此按键暂不支持，请选择其他按键"); return true; }
+            if (name.empty()) { setToolTip("暂不支持这个按键，请换一个"); return true; }
             QString value;
 #ifdef Q_OS_MACOS
             const bool ctrl = mods.testFlag(Qt::MetaModifier);
@@ -330,7 +335,7 @@ protected:
             if (meta) value += "cmd+";
             value += QString::fromStdString(name);
             if (global_ && !platform::parseHotkeyText(value.toStdString(), nullptr)) {
-                setToolTip("此按键暂不支持全局使用，请选择其他按键"); return true;
+                setToolTip("这个按键无法随时使用，请换一个"); return true;
             }
             setText(value); setToolTip("点击后直接按下单键或组合键");
             event->accept(); return true;
@@ -405,6 +410,26 @@ QIcon settingsIcon(int kind) {
     pixmap.setDevicePixelRatio(2); return QIcon(pixmap);
 }
 
+QString settingDescription(const QString& key) {
+    static const std::map<QString, QString> descriptions = {
+        {"clothesline.enabled", "鼠标停在屏幕顶部时展开"},
+        {"clothesline.hang_copied", "自动暂存复制的图片"},
+        {"clothesline.hang_system_capture", "自动暂存系统截图"},
+        {"trigger.enabled", "鼠标停在所选角落后截图"},
+        {"annotation.eraser_disable_reedit", "擦除后不能撤销"},
+        {"pin.thumbnail_modifier", "按住此键并双击贴图，缩小预览"},
+        {"hotkey.save_clipboard", "将已复制的图片保存为文件"},
+        {"ocr.model", "填写服务方提供的模型名称"},
+        {"translation.model", "填写服务方提供的模型名称"},
+        {"ocr.endpoint", "填写服务方提供的地址"},
+        {"translation.endpoint", "填写服务方提供的地址"},
+        {"ocr.api_key", "填写服务方提供的密钥"},
+        {"translation.api_key", "填写服务方提供的密钥"},
+    };
+    const auto entry = descriptions.find(key);
+    return entry == descriptions.end() ? QString() : entry->second;
+}
+
 QWidget* settingRow(const QString& label, QWidget* control, const QString& description = {}) {
     auto* row = new QWidget; row->setObjectName("settingRow");
     auto* layout = new QHBoxLayout(row); layout->setContentsMargins(16, 11, 16, 11); layout->setSpacing(24);
@@ -462,19 +487,23 @@ void SettingsDialog::addText(QFormLayout* form, const char* key, const QString& 
             reveal->setToolTip(on ? "隐藏密钥" : "显示密钥");
         });
     }
-    if (name.endsWith(".endpoint")) field->setPlaceholderText("https://…/v1");
-    else if (name.endsWith(".model")) field->setPlaceholderText("填写模型名称");
+    if (name.endsWith(".endpoint")) {
+        field->setPlaceholderText("https://…/v1");
+        field->setToolTip("地址可到 /v1\n或 /chat/completions");
+    }
+    else if (name.endsWith(".model")) field->setPlaceholderText("填写服务方提供的模型名称");
     else if (secret) field->setPlaceholderText("填写服务密钥");
     else if (name == "output.border.color") { field->setMinimumWidth(120); field->setMaximumWidth(150); }
     else if (name.startsWith("shortcut.") || name.startsWith("hotkey.")) {
         field->setMaximumWidth(name.startsWith("hotkey.") ? 210 : 150); field->setMinimumWidth(120);
 
     }
-    fields_[key] = field; appendRow(form, settingRow(label, field));
+    fields_[key] = field; appendRow(form, settingRow(label, field, settingDescription(name)));
 }
 void SettingsDialog::addBool(QFormLayout* form, const char* key, const QString& label, bool fallback) {
     auto* field = new SettingsSwitch; field->setChecked(original_.getBool(key, fallback));
-    field->setObjectName(key); fields_[key] = field; appendRow(form, settingRow(label, field));
+    field->setObjectName(key); fields_[key] = field;
+    appendRow(form, settingRow(label, field, settingDescription(QString::fromUtf8(key))));
 }
 void SettingsDialog::addNumber(QFormLayout* form, const char* key, const QString& label,
                                int fallback, int minimum, int maximum) {
@@ -482,7 +511,7 @@ void SettingsDialog::addNumber(QFormLayout* form, const char* key, const QString
     field->setValue(original_.getInt(key, fallback)); field->setObjectName(key);
     if (QString::fromUtf8(key).endsWith("_ms")) { field->setSuffix(" 毫秒"); field->setFixedWidth(168); }
     else if (QString::fromUtf8(key).startsWith("output.")) field->setSuffix(" px");
-    fields_[key] = field; appendRow(form, settingRow(label, field));
+    fields_[key] = field; appendRow(form, settingRow(label, field, settingDescription(QString::fromUtf8(key))));
 }
 void SettingsDialog::addChoice(QFormLayout* form, const char* key, const QString& label,
                                const QStringList& labels, const QStringList& values, const QString& fallback) {
@@ -490,11 +519,11 @@ void SettingsDialog::addChoice(QFormLayout* form, const char* key, const QString
     for (int i = 0; i < labels.size(); ++i) field->addItem(labels[i], values[i]);
     field->setCurrentIndex(qMax(0, values.indexOf(QString::fromStdString(original_.get(key, fallback.toStdString())))));
     field->setObjectName(key);
-    fields_[key] = field; appendRow(form, settingRow(label, field));
+    fields_[key] = field; appendRow(form, settingRow(label, field, settingDescription(QString::fromUtf8(key))));
 }
 SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
     : QDialog(parent), original_(config) {
-    setWindowTitle(QStringLiteral("J2 设置")); setObjectName("settingsDialog");
+    setWindowTitle(QStringLiteral("设置")); setObjectName("settingsDialog");
     resize(920, 700); setMinimumSize(780, 580);
     setWindowFlag(Qt::WindowContextHelpButtonHint, false);
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont); font.setPointSizeF(13); setFont(font);
@@ -550,19 +579,19 @@ SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
         pageLayout->insertWidget(pageLayout->count() - 1, label);
         pageLayout->insertSpacing(pageLayout->count() - 1, 22);
     };
-    auto* general = page("常规", "按你的习惯，安排截图与衣架。", 0);
+    auto* general = page("常规", "按你的习惯，设置截图与图片暂存。", 0);
     addChoice(group(general, "外观"), "appearance.theme", "颜色模式", {"跟随系统", "浅色", "深色"}, {"system", "light", "dark"}, "system");
-    auto* hanger = group(general, "衣架");
-    addBool(hanger, "clothesline.enabled", "在屏幕顶部显示衣架", true);
-    addBool(hanger, "clothesline.hang_copied", "自动收集复制的图片", true);
+    auto* hanger = group(general, "图片暂存");
+    addBool(hanger, "clothesline.enabled", "图片暂存", true);
+    addBool(hanger, "clothesline.hang_copied", "复制图片", true);
     addBool(hanger, "clothesline.hang_system_capture",
-            "自动收集系统截图（如 ⌘⇧4、Win+Shift+S）", true);
-    auto* corner = group(general, "触发角");
-    addBool(corner, "trigger.enabled", "停留在屏幕角落时截图", false);
-    addChoice(corner, "trigger.corners", "触发位置", {"所有角落", "左上角", "右上角", "左下角", "右下角"}, {"all", "tl", "tr", "bl", "br"}, "all");
+            "系统截图", true);
+    auto* corner = group(general, "角落截图");
+    addBool(corner, "trigger.enabled", "角落截图", false);
+    addChoice(corner, "trigger.corners", "截图位置", {"所有角落", "左上角", "右上角", "左下角", "右下角"}, {"all", "tl", "tr", "bl", "br"}, "all");
     addNumber(corner, "trigger.dwell_ms", "停留时间", 350, 100, 5000);
-    auto* output = page("截图与标注", "调整截图的输出效果和标注习惯。", 1);
-    auto* effects = group(output, "输出效果");
+    auto* output = page("截图标注", "设置图片外观和标注工具。", 1);
+    auto* effects = group(output, "截图外观");
     addBool(effects, "output.round.enabled", "圆角", false);
     addNumber(effects, "output.round.radius", "圆角半径", 8, 0, 500);
     addBool(effects, "output.border.enabled", "边框", false);
@@ -570,25 +599,26 @@ SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
     addText(effects, "output.border.color", "边框颜色", "#d2d2d2");
     addBool(effects, "output.shadow.enabled", "阴影", false);
     auto* annotation = group(output, "标注");
-    addNumber(annotation, "annotation.palette_size", "调色板颜色数量", 6, 2, 10);
-    addBool(annotation, "annotation.eraser_disable_reedit", "橡皮擦删除后不可撤销", false);
-    auto* pin = page("贴图", "选择关闭、隐藏与查看缩略图的方式。", 2);
+    addNumber(annotation, "annotation.palette_size", "颜色数量", 6, 2, 10);
+    addBool(annotation, "annotation.eraser_disable_reedit", "直接擦除", false);
+    auto* pin = page("屏幕贴图", "把已复制的内容贴在屏幕上。", 2);
     auto* dismiss = group(pin, "键盘操作");
     addChoice(dismiss, "pin.esc_action", "Esc", {"关闭贴图", "隐藏贴图"}, {"close", "hide"}, "close");
     addChoice(dismiss, "pin.shift_esc_action", "Shift + Esc", {"隐藏贴图", "关闭贴图"}, {"hide", "close"}, "hide");
-    addChoice(group(pin, "缩略图"), "pin.thumbnail_modifier", "按住并双击贴图", {"Shift", "Ctrl", "Alt"}, {"shift", "ctrl", "alt"}, "shift");
-    help(pin, "隐藏的贴图可以从托盘菜单中重新显示。关闭会移除当前贴图窗口。");
-    auto* shortcuts = page("快捷键", "点击输入框，直接按下单键或组合键。", 3);
+    addChoice(group(pin, "缩小预览"), "pin.thumbnail_modifier", "配合按键", {"Shift", "Ctrl", "Alt"}, {"shift", "ctrl", "alt"}, "shift");
+    help(pin, "隐藏后可从菜单栏重新显示。");
+    help(pin, "关闭会移除贴图窗口。");
+    auto* shortcuts = page("快捷键", "点击输入框，再按下要使用的按键。", 3);
     // 全局快捷键：在任何应用里都能触发（走系统级热键注册）。
     // 修饰键名称跨平台通用 —— macOS 的 Command、Windows 的 Win、
     // Linux 的 Super 都写作 cmd/win/super 之一，用户按本机叫法填写即可。
-    auto* globalKeys = group(shortcuts, "全局快捷键");
+    auto* globalKeys = group(shortcuts, "随时可用");
     const auto hotkeyDefault = [](char key) {
         return QString::fromStdString(platform::defaultHotkeyText(key));
     };
     addText(globalKeys, "hotkey.snip", "截图", hotkeyDefault('t'));
     addText(globalKeys, "hotkey.pin", "贴图", hotkeyDefault('p'));
-    addText(globalKeys, "hotkey.save_clipboard", "保存剪贴板图像",
+    addText(globalKeys, "hotkey.save_clipboard", "保存图片",
             hotkeyDefault('c'));
     auto* keys = group(shortcuts, "标注工具");
     const QStringList names = {"文字", "序号", "橡皮擦", "放大镜", "虚线", "圆角", "椭圆", "双向箭头", "反向箭头"};
@@ -597,23 +627,28 @@ SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
     for (const auto& id : core::ShortcutMap::actionIds()) {
         addText(keys, ("shortcut." + id).c_str(), names[index], defaults[index]); ++index;
     }
-    help(shortcuts, "点击输入框后直接按下所需按键，支持单键或组合键，无需按住 Ctrl 或 Command。标注工具可点击输入框右侧按钮禁用。全局快捷键会在其他应用中生效。");
+    help(shortcuts, "支持单独按键，也支持组合按键。");
+    help(shortcuts, "右侧 × 可停用标注按键。");
+    help(shortcuts, "“随时可用”的按键在其他应用也能用。");
     auto service = [&](const char* prefix, const QString& title, const QString& description, int icon) {
         auto* layout = page(title, description, icon);
-        auto* form = group(layout, "模型服务"); const std::string base(prefix);
+        auto* form = group(layout, "连接服务"); const std::string base(prefix);
         addText(form, (base + ".endpoint").c_str(), "服务地址");
         addText(form, (base + ".model").c_str(), "模型名称");
         addText(form, (base + ".api_key").c_str(), "服务密钥", {}, true);
-        help(layout, "使用兼容 OpenAI 的服务。地址可填写到 /v1，或完整的 /chat/completions。");
+        help(layout, "支持兼容 OpenAI 的服务。");
         return layout;
     };
-    auto* ocr = service("ocr", "文字识别", "用大模型提取图片中的文字，识别结果会复制到剪贴板。", 4);
-    help(ocr, "请选择支持图片输入的模型。发送图片前，J2 会先询问是否继续。");
-    auto* translation = service("translation", "翻译", "翻译剪贴板中的文字或图片，可以单独选择服务。", 5);
+    auto* ocr = service("ocr", "提取文字", "提取图片中的文字，完成后自动复制。", 4);
+    help(ocr, "服务需支持图片；发送前会征求同意。");
+    auto* translation = service("translation", "翻译内容", "翻译已复制的文字或图片。", 5);
     auto* language = group(translation, "翻译偏好");
-    addText(language, "translation.target_language", "目标语言", "简体中文");
-    help(translation, "翻译图片需要模型支持图片输入。发送文字或图片前，会先询问是否继续。");
-    for (auto* layout : {ocr, translation}) help(layout, "密钥保存在当前用户的本机设置文件中，未加密。请勿分享设置文件。");
+    addText(language, "translation.target_language", "翻译语言", "简体中文");
+    help(translation, "翻译图片需支持图片；发送前征求同意。");
+    for (auto* layout : {ocr, translation}) {
+        help(layout, "密钥在本机保存，未加密。");
+        help(layout, "请勿分享设置文件。");
+    }
 
     const auto dependentRows = [this](const char* toggle, std::initializer_list<const char*> keys) {
         auto* control = qobject_cast<QCheckBox*>(fields_.at(toggle));
@@ -624,8 +659,18 @@ SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
                 int index; QFormLayout::ItemRole role;
                 form->getWidgetPosition(row, &index, &role);
                 // 每项前面的分隔线也一起收起。
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
                 if (index > 0) form->setRowVisible(index - 1, on);
                 form->setRowVisible(row, on);
+#else
+                // 本表单每行都是横跨两列的 QWidget，旧版 Qt 直接隐藏整行。
+                if (index > 0) {
+                    if (auto* separator = form->itemAt(index - 1, QFormLayout::SpanningRole)) {
+                        if (separator->widget()) separator->widget()->setVisible(on);
+                    }
+                }
+                row->setVisible(on);
+#endif
             };
             update(control->isChecked());
             connect(control, &QCheckBox::toggled, row, update);
@@ -648,7 +693,7 @@ SettingsDialog::SettingsDialog(const core::Config& config, QWidget* parent)
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(navigation_, &QListWidget::currentRowChanged, pages_, &QStackedWidget::setCurrentIndex);
     navigation_->setCurrentRow(0);
-    connect(qobject_cast<QComboBox*>(fields_["appearance.theme"]), &QComboBox::currentIndexChanged, this, [this] { applyAppearance(); });
+    connect(qobject_cast<QComboBox*>(fields_["appearance.theme"]), qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { applyAppearance(); });
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
         const auto* theme = qobject_cast<QComboBox*>(fields_["appearance.theme"]);
@@ -769,7 +814,9 @@ void SettingsDialog::validateAndAccept() {
         const QUrl url(endpoint);
         if (model.isEmpty() || !url.isValid() || url.host().isEmpty() ||
             (url.scheme() != "https" && url.scheme() != "http") || !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment()) {
-            showFieldError(prefix + (model.isEmpty() ? ".model" : ".endpoint"), (prefix == "ocr" ? QStringLiteral("文字识别") : QStringLiteral("翻译")) + "：请填写有效的服务地址和模型名称。"); return;
+            showFieldError(prefix + (model.isEmpty() ? ".model" : ".endpoint"),
+                model.isEmpty() ? QStringLiteral("请填写服务方提供的模型名称")
+                                : QStringLiteral("服务地址无效，请检查后重试")); return;
         }
     }
     // 全局快捷键：格式必须能被平台层解析，且三个动作之间不能重复
@@ -778,7 +825,7 @@ void SettingsDialog::validateAndAccept() {
         const std::pair<const char*, const char*> globals[] = {
             {"hotkey.snip", "截图"},
             {"hotkey.pin", "贴图"},
-            {"hotkey.save_clipboard", "保存剪贴板图像"},
+            {"hotkey.save_clipboard", "保存图片"},
         };
         std::vector<platform::HotkeySpec> parsedGlobals;
         std::vector<std::string> parsedNames;
@@ -786,19 +833,16 @@ void SettingsDialog::validateAndAccept() {
             const std::string value = config.get(key);
             platform::HotkeySpec spec;
             if (!platform::parseHotkeyText(value, &spec)) {
-                showFieldError(key, QStringLiteral("%1的全局快捷键格式无效：%2。"
-                                                   "请点击输入框，直接按下所需单键或组合键。")
-                                        .arg(QString::fromUtf8(label),
-                                             QString::fromStdString(value)));
+                showFieldError(key, QStringLiteral("%1：请点击输入框，重新按键")
+                                        .arg(QString::fromUtf8(label)));
                 return;
             }
             for (std::size_t i = 0; i < parsedGlobals.size(); ++i) {
                 if (parsedGlobals[i].key == spec.key &&
                     parsedGlobals[i].modifiers == spec.modifiers) {
-                    showFieldError(key, QStringLiteral("%1与%2不能使用相同的全局快捷键：%3")
+                    showFieldError(key, QStringLiteral("%1与%2按键相同，请更换")
                                             .arg(QString::fromUtf8(label),
-                                                 QString::fromStdString(parsedNames[i]),
-                                                 QString::fromStdString(value)));
+                                                 QString::fromStdString(parsedNames[i])));
                     return;
                 }
             }
@@ -810,19 +854,19 @@ void SettingsDialog::validateAndAccept() {
     for (const auto& id : core::ShortcutMap::actionIds()) {
         const auto value = config.get("shortcut." + id);
         core::ShortcutSpec spec;
-        if (!core::parseShortcutSpec(value, &spec)) { showFieldError("shortcut." + id, "快捷键格式无效：" + QString::fromStdString(value)); return; }
+        if (!core::parseShortcutSpec(value, &spec)) { showFieldError("shortcut." + id, "无法识别按键：" + QString::fromStdString(value)); return; }
         if (!spec.key) continue;
         for (const auto& entry : assigned) {
             if (spec.key == entry.second.key && spec.modifiers == entry.second.modifiers) {
-                showFieldError("shortcut." + id, "两个标注动作不能使用相同快捷键：" + QString::fromStdString(value)); return;
+                showFieldError("shortcut." + id, "按键重复，请更换：" + QString::fromStdString(value)); return;
             }
         }
         assigned.emplace_back(id, spec);
     }
     if (!QColor(QString::fromStdString(config.get("output.border.color"))).isValid()) {
-        showFieldError("output.border.color", "请填写有效的边框颜色，例如 #d2d2d2。"); return;
+        showFieldError("output.border.color", "颜色无效，可填写 #d2d2d2"); return;
     }
-    if (config.get("translation.target_language").empty()) { showFieldError("translation.target_language", "请填写翻译目标语言。"); return; }
+    if (config.get("translation.target_language").empty()) { showFieldError("translation.target_language", "请填写要翻译成的语言"); return; }
     accept();
 }
 }

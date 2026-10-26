@@ -61,8 +61,8 @@ const char* toolDisplayName(core::AnnotationTool tool) {
         case core::AnnotationTool::Rect:    return "矩形";
         case core::AnnotationTool::Ellipse: return "椭圆";
         case core::AnnotationTool::Arrow:   return "箭头";
-        case core::AnnotationTool::Pencil:  return "铅笔";
-        case core::AnnotationTool::Marker:  return "马克笔";
+        case core::AnnotationTool::Pencil:  return "画笔";
+        case core::AnnotationTool::Marker:  return "荧光笔";
         case core::AnnotationTool::Mosaic:  return "马赛克";
         case core::AnnotationTool::Blur:    return "模糊";
         case core::AnnotationTool::Eraser:  return "橡皮擦";

@@ -4,5 +4,8 @@
     <file>menubar/white-22.png</file>
     <file>menubar/white-44.png</file>
     <file>menubar/white-66.png</file>
+    <file>menubar/black-22.png</file>
+    <file>menubar/black-44.png</file>
+    <file>menubar/black-66.png</file>
   </qresource>
 </RCC>

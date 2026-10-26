@@ -31,4 +31,7 @@ QString appHistoryFile();
 /// 返回是否发生了迁移。搬的是**复制**：旧文件保留，用户仍可回退。
 bool migrateLegacyAppData(const QString& legacyDirectory);
 
+/// 把文件移入系统回收站；失败时保留原文件，不降级为永久删除。
+bool moveFileToTrash(const QString& path);
+
 } // namespace jie2::ui

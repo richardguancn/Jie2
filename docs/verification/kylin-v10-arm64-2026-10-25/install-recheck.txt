@@ -1,0 +1,42 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+python3 is already the newest version (3.8.2-0ubuntu2).
+xauth is already the newest version (1:1.1-0ubuntu1).
+desktop-file-utils is already the newest version (0.24-1ubuntu3).
+python3-pil is already the newest version (7.0.0-4ubuntu0.9).
+xvfb is already the newest version (2:1.20.13-1ubuntu1~20.04.20).
+Suggested packages:
+  tesseract-ocr tesseract-ocr-chi-sim zbar-tools
+The following NEW packages will be installed:
+  jie2
+0 upgraded, 1 newly installed, 0 to remove and 4 not upgraded.
+Need to get 0 B/395 kB of archives.
+After this operation, 1597 kB of additional disk space will be used.
+Get:1 /work/jie2_0.0.2_arm64.deb jie2 arm64 0.0.2 [395 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Selecting previously unselected package jie2.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 21659 files and directories currently installed.)
+Preparing to unpack /work/jie2_0.0.2_arm64.deb ...
+Unpacking jie2 (0.0.2) ...
+Setting up jie2 (0.0.2) ...
+Processing triggers for mime-support (3.64ubuntu1) ...
+Processing triggers for desktop-file-utils (0.24-1ubuntu3) ...
+/usr/share/applications/jie2.desktop: hint: value "Utility;Graphics;" for key "Categories" in group "Desktop Entry" contains more than one main category; application might appear more than once in the application menu
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'
+self-check passed: GUI, PNG, TLS
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'
+[jie2] 命令行覆盖：输出=/tmp/tmp.ptZzS8hcwF/installed-capture.png 仅剪贴板=否
+saved: /tmp/tmp.ptZzS8hcwF/installed-capture.png
+self-check passed: GUI, PNG, TLS
+(Reading database ... 21686 files and directories currently installed.)
+Preparing to unpack /work/jie2_0.0.2_arm64.deb ...
+Unpacking jie2 (0.0.2) over (0.0.2) ...
+Setting up jie2 (0.0.2) ...
+Processing triggers for desktop-file-utils (0.24-1ubuntu3) ...
+Processing triggers for mime-support (3.64ubuntu1) ...
+(Reading database ... 21686 files and directories currently installed.)
+Removing jie2 (0.0.2) ...
+Processing triggers for desktop-file-utils (0.24-1ubuntu3) ...
+Processing triggers for mime-support (3.64ubuntu1) ...
+安装、重复安装、启动、截图和卸载检查通过，用户配置保留。

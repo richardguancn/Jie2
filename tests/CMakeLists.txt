@@ -49,13 +49,33 @@ if(TARGET Qt6::Widgets OR TARGET Qt5::Widgets)
             ../src/ui/ocr_runner.cpp
             ../src/ui/settings_dialog.cpp
             ../src/ui/single_instance.cpp
+            ../src/ui/system_menu.cpp
         )
         target_include_directories(jie2_ui_alignment_tests PRIVATE ../src)
         target_link_libraries(jie2_ui_alignment_tests PRIVATE
             jie2_core jie2_platform ${JIE2_TEST_QT_LIBS})
-        add_test(NAME ui_alignment_tests COMMAND jie2_ui_alignment_tests)
-        set_tests_properties(ui_alignment_tests PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        if(APPLE)
+            target_sources(jie2_ui_alignment_tests PRIVATE native_menu_test_support.mm)
+            add_executable(jie2_native_snap_fixture MACOSX_BUNDLE native_snap_fixture.mm)
+            set_target_properties(jie2_native_snap_fixture PROPERTIES
+                MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/native_snap_fixture.plist.in")
+            target_link_libraries(jie2_native_snap_fixture PRIVATE "-framework Cocoa" "-framework ApplicationServices")
+        endif()
+        # Qt 5.12 的 offscreen 插件不支持托盘，初始化会崩溃；用虚拟 X11
+        # 运行同一套真实控件测试，覆盖与麒麟 X11 桌面相同的平台插件。
+        if(UNIX AND NOT APPLE AND JIE2_QT_VERSION_MAJOR EQUAL 5)
+            find_program(JIE2_XVFB_RUN xvfb-run)
+        endif()
+        if(JIE2_XVFB_RUN AND JIE2_QT_VERSION_MAJOR EQUAL 5)
+            add_test(NAME ui_alignment_tests
+                COMMAND "${JIE2_XVFB_RUN}" -a -s "-screen 0 1280x1024x24" $<TARGET_FILE:jie2_ui_alignment_tests>)
+            set_tests_properties(ui_alignment_tests PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=xcb;XDG_SESSION_TYPE=x11")
+        else()
+            add_test(NAME ui_alignment_tests COMMAND jie2_ui_alignment_tests)
+            set_tests_properties(ui_alignment_tests PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
     endif()
 endif()
 

@@ -1,0 +1,267 @@
+Start testing: Oct 25 07:48 UTC
+----------------------------------------------------------
+1/3 Testing: core_tests
+1/3 Test: core_tests
+Command: "/work/build-kylin-arm64/tests/jie2_core_tests"
+Directory: /work/build-kylin-arm64/tests
+"core_tests" start time: Oct 25 07:48 UTC
+Output:
+----------------------------------------------------------
+all core tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"core_tests" end time: Oct 25 07:48 UTC
+"core_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/3 Testing: ui_alignment_tests
+2/3 Test: ui_alignment_tests
+Command: "/usr/bin/xvfb-run" "-a" "-s" "-screen 0 1280x1024x24" "/work/build-kylin-arm64/tests/jie2_ui_alignment_tests"
+Directory: /work/build-kylin-arm64/tests
+"ui_alignment_tests" start time: Oct 25 07:48 UTC
+Output:
+----------------------------------------------------------
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'
+********* Start testing of jie2::ui::UiAlignmentTest *********
+Config: Using QtTest library 5.12.8, Qt 5.12.8 (arm64-little_endian-lp64 shared (dynamic) release build; by GCC 9.3.0)
+PASS   : jie2::ui::UiAlignmentTest::initTestCase()
+PASS   : jie2::ui::UiAlignmentTest::globalHotkeyParsing()
+PASS   : jie2::ui::UiAlignmentTest::globalHotkeysEditableInSettings()
+QINFO  : jie2::ui::UiAlignmentTest::shortcutsRecordSaveAndUse() [jie2] 文字：点击要写字的位置
+QINFO  : jie2::ui::UiAlignmentTest::shortcutsRecordSaveAndUse() [jie2] 文字：点击要写字的位置
+QINFO  : jie2::ui::UiAlignmentTest::shortcutsRecordSaveAndUse() [jie2] 文字：点击要写字的位置
+PASS   : jie2::ui::UiAlignmentTest::shortcutsRecordSaveAndUse()
+PASS   : jie2::ui::UiAlignmentTest::simplifiedSettings()
+PASS   : jie2::ui::UiAlignmentTest::compactSettingsCopy()
+QINFO  : jie2::ui::UiAlignmentTest::elementAccessGuidance() [jie2] 主题：dark（来源：默认）
+PASS   : jie2::ui::UiAlignmentTest::elementAccessGuidance()
+QINFO  : jie2::ui::UiAlignmentTest::hoverWindowSelection() [jie2] 选区结算 100,100 240x180 → hasSelection=1
+QINFO  : jie2::ui::UiAlignmentTest::hoverWindowSelection() [jie2] 提交选区 逻辑=100,100 240x180 像素=200,200 480x360 源=当前屏 标注=0 输出=480x360
+PASS   : jie2::ui::UiAlignmentTest::hoverWindowSelection()
+QINFO  : jie2::ui::UiAlignmentTest::hoverElementsAndBypass() [jie2] 选区结算 120,110 80x30 → hasSelection=1
+QINFO  : jie2::ui::UiAlignmentTest::hoverElementsAndBypass() [jie2] 提交选区 逻辑=120,110 80x30 像素=120,110 80x30 源=当前屏 标注=0 输出=80x30
+PASS   : jie2::ui::UiAlignmentTest::hoverElementsAndBypass()
+QINFO  : jie2::ui::UiAlignmentTest::hoverDragAndScreenEdges() [jie2] 选区结算 0,0 0x0 → hasSelection=0
+QINFO  : jie2::ui::UiAlignmentTest::hoverDragAndScreenEdges() [jie2] 选区结算 202,102 155x135 → hasSelection=1
+PASS   : jie2::ui::UiAlignmentTest::hoverDragAndScreenEdges()
+QINFO  : jie2::ui::UiAlignmentTest::staleElementResultIsIgnored() [jie2] 选区结算 40,50 500x300 → hasSelection=1
+PASS   : jie2::ui::UiAlignmentTest::staleElementResultIsIgnored()
+QINFO  : jie2::ui::UiAlignmentTest::hoverSnapshotRefreshAndImageMode() [jie2] 已刷新截图（标注保留 0 条）
+QINFO  : jie2::ui::UiAlignmentTest::hoverSnapshotRefreshAndImageMode() [jie2] F5 刷新截图完成（几何不变，保留标注 0 条）
+QINFO  : jie2::ui::UiAlignmentTest::hoverSnapshotRefreshAndImageMode() [jie2] 选区结算 242,62 176x116 → hasSelection=1
+PASS   : jie2::ui::UiAlignmentTest::hoverSnapshotRefreshAndImageMode()
+SKIP   : jie2::ui::UiAlignmentTest::nativeWindowAndElementSnap() 需要 macOS 桌面
+   Loc: [/work/tests/ui_alignment_tests.cpp(494)]
+PASS   : jie2::ui::UiAlignmentTest::choiceSettingsControls()
+PASS   : jie2::ui::UiAlignmentTest::numericSettingsControls()
+PASS   : jie2::ui::UiAlignmentTest::overlayRequestsWindowPromotion()
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 主题：dark（来源：默认）
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 衣架：0 项
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 系统截图监听：1 个目录（/tmp/jie2_ui_alignment_tests-uODkyv）
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 截图热键已注册：F1
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 贴图热键已注册：Ctrl+Alt+P
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 保存剪贴板热键已注册：Ctrl+Alt+C
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline() [jie2] 系统截图已挂上衣架：/tmp/jie2_ui_alignment_tests-uODkyv/Screen Shot 2026-02-02 at 10.11.12.png
+PASS   : jie2::ui::UiAlignmentTest::systemCaptureHangsOnClothesline()
+PASS   : jie2::ui::UiAlignmentTest::systemCaptureNameDetection()
+QINFO  : jie2::ui::UiAlignmentTest::settingsSaveReloadAndCancel() [jie2] 主题：dark（来源：默认）
+QINFO  : jie2::ui::UiAlignmentTest::settingsSaveReloadAndCancel() [jie2] 主题：dark（来源：默认）
+PASS   : jie2::ui::UiAlignmentTest::settingsSaveReloadAndCancel()
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 主题：dark（来源：默认）
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 主题：dark（来源：默认）
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 系统截图监听：0 个目录（）
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 截图热键已注册：F1
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 贴图热键已注册：Ctrl+Alt+P
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 保存剪贴板热键已注册：Ctrl+Alt+C
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 截图热键已注册：F1
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 贴图热键已注册：Ctrl+Alt+P
+QINFO  : jie2::ui::UiAlignmentTest::settingsApplyImmediately() [jie2] 保存剪贴板热键已注册：Ctrl+Alt+C
+PASS   : jie2::ui::UiAlignmentTest::settingsApplyImmediately()
+PASS   : jie2::ui::UiAlignmentTest::settingsValidationAndScreenshots()
+PASS   : jie2::ui::UiAlignmentTest::modelServices(ocr)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(auto-uses-model)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(translate-text)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(translate-image)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(authentication-failure)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(malformed-response)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(missing-result)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(empty-result)
+PASS   : jie2::ui::UiAlignmentTest::modelServices(timeout)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(success)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(success-light)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(failure-retry)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(timeout)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(missing-config)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(change-selection)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcr(close-running)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(right)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(left)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(below)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(above)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(fullscreen)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(small)
+PASS   : jie2::ui::UiAlignmentTest::screenshotOcrPanelFits(narrow)
+PASS   : jie2::ui::UiAlignmentTest::toolbarFits(desktop-dark)
+PASS   : jie2::ui::UiAlignmentTest::toolbarFits(small-light)
+PASS   : jie2::ui::UiAlignmentTest::toolbarFits(narrow-dark)
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 标注已添加：rect（共 1 条）
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 已撤销
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 撤销（剩 0 条）
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 已重做
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 重做（共 1 条）
+QINFO  : jie2::ui::UiAlignmentTest::annotateExistingImage() [jie2] 提交选区 逻辑=200,160 240x160 像素=0,0 240x160 源=当前屏 标注=1 输出=240x160
+PASS   : jie2::ui::UiAlignmentTest::annotateExistingImage()
+QINFO  : jie2::ui::UiAlignmentTest::toolbarDoubleClickDoesNotSave() [jie2] 切换工具：箭头
+QINFO  : jie2::ui::UiAlignmentTest::toolbarDoubleClickDoesNotSave() [jie2] 工具：箭头 · 滚轮调粗细
+PASS   : jie2::ui::UiAlignmentTest::toolbarDoubleClickDoesNotSave()
+QINFO  : jie2::ui::UiAlignmentTest::largeImageKeepsResolution() [jie2] 提交选区 逻辑=0,0 640x480 像素=0,0 1600x1200 源=当前屏 标注=0 输出=1600x1200
+PASS   : jie2::ui::UiAlignmentTest::largeImageKeepsResolution()
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineGestures() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineGestures() [jie2] 衣架展开（1 项）
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineGestures() [jie2] 衣架：1 项
+PASS   : jie2::ui::UiAlignmentTest::clotheslineGestures()
+PASS   : jie2::ui::UiAlignmentTest::cropHandlesResizeAndMove()
+PASS   : jie2::ui::UiAlignmentTest::cropHandlesWorkAfterToolChosen()
+PASS   : jie2::ui::UiAlignmentTest::cropHandleHitAreaIsGenerous()
+QINFO  : jie2::ui::UiAlignmentTest::actionButtonsAreDistinct() [jie2] 提交选区 逻辑=200,160 240x160 像素=0,0 240x160 源=当前屏 标注=0 输出=240x160
+QINFO  : jie2::ui::UiAlignmentTest::actionButtonsAreDistinct() [jie2] 提交选区 逻辑=200,160 240x160 像素=0,0 240x160 源=当前屏 标注=0 输出=240x160
+QINFO  : jie2::ui::UiAlignmentTest::actionButtonsAreDistinct() [jie2] 提交选区 逻辑=200,160 240x160 像素=0,0 240x160 源=当前屏 标注=0 输出=240x160
+PASS   : jie2::ui::UiAlignmentTest::actionButtonsAreDistinct()
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架展开（1 项）
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() 固定窗口第 1 轮：位置 QPoint(0,0) 内容偏移 0
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架收起
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架展开（1 项）
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() 固定窗口第 2 轮：位置 QPoint(0,0) 内容偏移 0
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架收起
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架展开（1 项）
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() 固定窗口第 3 轮：位置 QPoint(0,0) 内容偏移 0
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift() [jie2] 衣架收起
+PASS   : jie2::ui::UiAlignmentTest::clotheslineWindowDoesNotDrift()
+QINFO  : jie2::ui::UiAlignmentTest::revealDwellAndLeaveDelay() [jie2] 衣架展开（0 项）
+QINFO  : jie2::ui::UiAlignmentTest::revealDwellAndLeaveDelay() [jie2] 衣架收起
+PASS   : jie2::ui::UiAlignmentTest::revealDwellAndLeaveDelay()
+PASS   : jie2::ui::UiAlignmentTest::menuMatchesReference()
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(-1) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(-1) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(-1)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(0) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(0) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(0)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(1) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(1) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(1)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(2) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(2) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(2)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(3) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(3) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(3)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(4) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(4) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(4)
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(6) [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(6) [jie2] 衣架展开（1 项）
+PASS   : jie2::ui::UiAlignmentTest::clotheslineContextMenuClick(6)
+QINFO  : jie2::ui::UiAlignmentTest::referencePreviews() [jie2] 衣架：7 项
+QINFO  : jie2::ui::UiAlignmentTest::referencePreviews() [jie2] 衣架展开（7 项）
+PASS   : jie2::ui::UiAlignmentTest::referencePreviews()
+QINFO  : jie2::ui::UiAlignmentTest::copiedBadgeAndRevealBreeze() [jie2] 衣架：2 项
+QINFO  : jie2::ui::UiAlignmentTest::copiedBadgeAndRevealBreeze() [jie2] 衣架展开（2 项）
+QINFO  : jie2::ui::UiAlignmentTest::copiedBadgeAndRevealBreeze() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::copiedBadgeAndRevealBreeze() [jie2] 衣架：0 项
+PASS   : jie2::ui::UiAlignmentTest::copiedBadgeAndRevealBreeze()
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图创建 400x240
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图反色：开
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图方形局部 QPointF(50,60)
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图重置为 100%
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图缩放 200%
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图重置为 100%
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图缩略图模式
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图重置为 100%
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图已保存：/tmp/jie2_ui_alignment_tests-tZjFEw/export.png
+QINFO  : jie2::ui::UiAlignmentTest::pinContextMenu() [jie2] 贴图方形局部 QPointF(40,30)
+PASS   : jie2::ui::UiAlignmentTest::pinContextMenu()
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(off-center) [jie2] 贴图创建 400x240
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(off-center) [jie2] 贴图方形局部 QPointF(180,110)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(off-center) [jie2] 贴图缩放 200%
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(off-center) [jie2] 贴图恢复完整图片
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(off-center) [jie2] 贴图关闭（Esc）
+PASS   : jie2::ui::UiAlignmentTest::pinDetail(off-center)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(top-left) [jie2] 贴图创建 400x240
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(top-left) [jie2] 贴图方形局部 QPointF(2,2)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(top-left) [jie2] 贴图缩放 200%
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(top-left) [jie2] 贴图恢复完整图片
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(top-left) [jie2] 贴图关闭（Esc）
+PASS   : jie2::ui::UiAlignmentTest::pinDetail(top-left)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(bottom-right) [jie2] 贴图创建 400x240
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(bottom-right) [jie2] 贴图方形局部 QPointF(397,237)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(bottom-right) [jie2] 贴图缩放 200%
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(bottom-right) [jie2] 贴图恢复完整图片
+QINFO  : jie2::ui::UiAlignmentTest::pinDetail(bottom-right) [jie2] 贴图关闭（Esc）
+PASS   : jie2::ui::UiAlignmentTest::pinDetail(bottom-right)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetailRetinaAndTransforms() [jie2] 贴图创建 800x480
+QINFO  : jie2::ui::UiAlignmentTest::pinDetailRetinaAndTransforms() [jie2] 贴图方形局部 QPointF(200,160)
+QINFO  : jie2::ui::UiAlignmentTest::pinDetailRetinaAndTransforms() [jie2] 贴图重置为 100%
+QINFO  : jie2::ui::UiAlignmentTest::pinDetailRetinaAndTransforms() [jie2] 贴图缩略图模式
+PASS   : jie2::ui::UiAlignmentTest::pinDetailRetinaAndTransforms()
+QINFO  : jie2::ui::UiAlignmentTest::contextMenuKeepsFiles() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::contextMenuKeepsFiles() [jie2] 衣架展开（1 项）
+QINFO  : jie2::ui::UiAlignmentTest::contextMenuKeepsFiles() [jie2] 衣架：取下 /tmp/jie2_ui_alignment_tests-yTRTQG/sample.png
+PASS   : jie2::ui::UiAlignmentTest::contextMenuKeepsFiles()
+SKIP   : jie2::ui::UiAlignmentTest::systemMenus() 需要 macOS 桌面
+   Loc: [/work/tests/ui_alignment_tests.cpp(1628)]
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 主题：dark（来源：默认）
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 衣架：1 项
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 系统截图监听：0 个目录（）
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 截图热键已注册：F1
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 贴图热键已注册：Ctrl+Alt+P
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 保存剪贴板热键已注册：Ctrl+Alt+C
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 贴图创建 128x56
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 已关闭全部贴图（1 张）
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 贴图创建 160x80
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 已关闭全部贴图（1 张）
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] OCR 后端=system-test 结果=成功 文本长度=18
+QWARN  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 贴图失败：请先复制图片、文字或颜色
+QINFO  : jie2::ui::UiAlignmentTest::trayMenuClicks() [jie2] 当前会话无法提升遮罩层级（Wayland 合成器不允许客户端自定层级）；若遮罩被全屏或远程桌面窗口盖住，请先退出全屏
+PASS   : jie2::ui::UiAlignmentTest::trayMenuClicks()
+QINFO  : jie2::ui::UiAlignmentTest::readmeFigures() [jie2] 贴图创建 1040x600
+QINFO  : jie2::ui::UiAlignmentTest::readmeFigures() [jie2] 贴图缩放 40%
+QINFO  : jie2::ui::UiAlignmentTest::readmeFigures() [jie2] 衣架：5 项
+QINFO  : jie2::ui::UiAlignmentTest::readmeFigures() [jie2] 衣架展开（5 项）
+PASS   : jie2::ui::UiAlignmentTest::readmeFigures()
+PASS   : jie2::ui::UiAlignmentTest::cleanupTestCase()
+Totals: 75 passed, 0 failed, 2 skipped, 0 blacklisted, 22964ms
+********* Finished testing of jie2::ui::UiAlignmentTest *********
+<end of output>
+Test time =  23.03 sec
+----------------------------------------------------------
+Test Passed.
+"ui_alignment_tests" end time: Oct 25 07:49 UTC
+"ui_alignment_tests" time elapsed: 00:00:23
+----------------------------------------------------------
+
+3/3 Testing: windows_dependencies_tests
+3/3 Test: windows_dependencies_tests
+Command: "/usr/bin/python3.8" "/work/tests/windows_dependencies_tests.py"
+Directory: /work/build-kylin-arm64/tests
+"windows_dependencies_tests" start time: Oct 25 07:49 UTC
+Output:
+----------------------------------------------------------
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.004s
+
+OK
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"windows_dependencies_tests" end time: Oct 25 07:49 UTC
+"windows_dependencies_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 25 07:49 UTC

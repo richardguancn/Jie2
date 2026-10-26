@@ -1,3 +1,5 @@
+#include "ui/qt_compat.h"
+#include "ui/system_menu.h"
 #include "ui/selection_overlay.h"
 
 #include <algorithm>
@@ -29,6 +31,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolTip>
+#include <memory>
 #include <QToolButton>
 #include <QWindow>
 #include <QWheelEvent>
@@ -135,10 +138,16 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
       screen_(screen),
       historyPaths_(std::move(options.historyPaths)),
       recapture_(std::move(options.recapture)),
+      promoteWindow_(std::move(options.promoteWindow)),
       snapCandidates_(std::move(options.snapCandidates)),
+      snapTargets_(std::move(options.snapTargets)),
       paletteSize_(options.paletteSize),
-      shortcuts_(options.shortcuts),
-      promoteWindow_(std::move(options.promoteWindow)) {
+      shortcuts_(options.shortcuts) {
+    hoverTimer_ = new QTimer(this);
+    hoverTimer_->setSingleShot(true);
+    hoverTimer_->setInterval(60);
+    connect(hoverTimer_, &QTimer::timeout, this, &SelectionOverlay::queryHoverElements);
+    refreshSnapTargets();
     ocrConfig_ = std::move(options.ocrConfig);
     // 主题：深色 = 现有观感（默认）；浅色给自绘面板整套浅色板。
     if (options.darkTheme) {
@@ -159,7 +168,7 @@ SelectionOverlay::SelectionOverlay(QPixmap frozen, double scaleFactor,
 
     // 具名窗口标题：空标题在 macOS 的辅助功能树里显示为占位符，
     // 会让自动化工具（含测试）无法稳定引用这个窗口。
-    setWindowTitle(QStringLiteral("J2 选择截图区域"));
+    setWindowTitle(QStringLiteral("截图"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::NoDropShadowWindowHint);
     setWindowModality(Qt::ApplicationModal);
@@ -210,6 +219,8 @@ SelectionOverlay::Outcome SelectionOverlay::run(const QPixmap& frozen,
 }
 
 void SelectionOverlay::setFrozenImage(const QImage& image, bool isCurrentScreen) {
+    clearHoverTarget();
+    screenSnapshot_ = isCurrentScreen;
     invalidateOcr();
     frozenImage_ = image;
     frozen_ = QPixmap::fromImage(image);
@@ -267,7 +278,7 @@ void SelectionOverlay::switchHistory(int index) {
     selectionRect_ = QRect();
     snapActive_ = false;
     dragging_ = false;
-    showToast(QStringLiteral("历史 %1/%2（, 更旧 / . 更新）")
+    showToast(QStringLiteral("历史%1/%2（,前 .后）")
                   .arg(index + 1)
                   .arg(historyPaths_.size()));
     qInfo().noquote() << QStringLiteral("[jie2] 回放历史 %1/%2：%3")
@@ -283,6 +294,10 @@ void SelectionOverlay::recapture() {
     }
     // 关键：遮罩此刻正盖在屏幕上，直接抓屏会把遮罩自己拍进去。
     // 必须先隐藏，等合成器真正移除窗口后再抓屏，然后恢复显示。
+    clearHoverTarget();
+    pressedTarget_ = {};
+    dragging_ = false;
+    snapActive_ = false;
     hide();
     {
         // 嵌套事件循环等待：让隐藏事件被处理、合成器完成一次合成。
@@ -292,13 +307,14 @@ void SelectionOverlay::recapture() {
         loop.exec();
     }
     const QPixmap fresh = recapture_();
+    if (!fresh.isNull()) refreshSnapTargets();
     show();
     raise();
     activateWindow();
     setFocus();
 
     if (fresh.isNull()) {
-        showToast(QStringLiteral("刷新失败：抓屏返回空图像"));
+        showToast(QStringLiteral("未能获取画面，请重试"));
         update();
         return;
     }
@@ -332,10 +348,11 @@ void SelectionOverlay::recapture() {
         selectionRect_ = QRect();
         snapActive_ = false;
         dragging_ = false;
-        showToast(QStringLiteral("已刷新截图（画面几何已变，标注已清空）"));
+        showToast(QStringLiteral("画面尺寸已变，已清空标注"));
         qInfo().noquote()
             << QStringLiteral("[jie2] F5 刷新截图完成（几何变化，清空标注）");
     }
+    if (!hasSelection_) updateHoverTarget(cursor_, snapBypass_);
     update();
 }
 
@@ -367,6 +384,7 @@ QRect SelectionOverlay::selectionToPixelRegion(const QRect& logical) const {
 
 QRect SelectionOverlay::currentSelection() const {
     if (dragging_) {
+        if (!pressedTarget_.isEmpty()) return pressedTarget_;
         // 拖拽中：以吸附结果为准（若有命中），否则用原始拖拽矩形。
         if (snapActive_) {
             const core::Rect& snapped = lastSnap_.rect;
@@ -380,7 +398,94 @@ QRect SelectionOverlay::currentSelection() const {
         // 吸附过的选区一旦重算就会丢掉吸附结果。
         return selectionRect_;
     }
-    return {};
+    return hoverRect_;
+}
+
+void SelectionOverlay::refreshSnapTargets() {
+    clearHoverTarget();
+    if (!snapTargets_) return;
+    auto targets = snapTargets_();
+    snapCandidates_ = std::move(targets.windows);
+    elementsAt_ = std::move(targets.elementsAt);
+    accessibilityRequired_ = targets.accessibilityRequired;
+}
+
+void SelectionOverlay::clearHoverTarget() {
+    ++hoverGeneration_;
+    if (hoverTimer_) hoverTimer_->stop();
+    hoverCandidates_.clear();
+    hoverRect_ = {};
+    hoverWindow_ = {};
+    hoverIndex_ = 0;
+    hoverChoiceChanged_ = false;
+}
+
+void SelectionOverlay::updateHoverTarget(const QPoint& point, bool bypass) {
+    if (hasSelection_ || dragging_ || !screenSnapshot_ || bypass || snapBypass_) {
+        clearHoverTarget();
+        return;
+    }
+    if (point == hoverPoint_ && !hoverWindow_.isEmpty()) return;
+    clearHoverTarget();
+    hoverPoint_ = point;
+    for (const auto& candidate : snapCandidates_) {
+        const QRect window(candidate.x, candidate.y, candidate.width, candidate.height);
+        if (window.contains(point)) {
+            hoverWindow_ = window.intersected(rect());
+            hoverCandidates_.push_back(hoverWindow_);
+            hoverRect_ = hoverWindow_;
+            if (elementsAt_) hoverTimer_->start();
+            break; // 首个命中的是最前方窗口，不能选到被它遮住的窗口。
+        }
+    }
+}
+
+void SelectionOverlay::queryHoverElements() {
+    if (elementQueryRunning_ || !elementsAt_ || hoverWindow_.isEmpty() ||
+        hasSelection_ || dragging_ || snapBypass_ || !screenSnapshot_) return;
+    elementQueryRunning_ = true;
+    const quint64 generation = hoverGeneration_;
+    const QPoint point = hoverPoint_;
+    auto result = std::make_shared<std::vector<core::Rect>>();
+    auto* worker = QThread::create([query = elementsAt_, point, result] {
+        *result = query({point.x(), point.y()});
+    });
+    connect(worker, &QThread::finished, this, [this, result, generation] {
+        elementQueryRunning_ = false;
+        if (generation != hoverGeneration_) {
+            if (!hoverWindow_.isEmpty() && !hasSelection_ && !dragging_) hoverTimer_->start();
+            return;
+        }
+        std::vector<QRect> candidates;
+        for (const auto& item : *result) {
+            const QRect region = QRect(item.x, item.y, item.width, item.height).intersected(hoverWindow_);
+            if (region.width() < 4 || region.height() < 4 || !region.contains(hoverPoint_) ||
+                region == hoverWindow_ || std::find(candidates.begin(), candidates.end(), region) != candidates.end()) continue;
+            // 只接受包含上一级的父区域，丢弃无关或倒序的结果。
+            if (!candidates.empty() && !region.contains(candidates.back())) continue;
+            candidates.push_back(region);
+        }
+        candidates.push_back(hoverWindow_);
+        const auto previous = std::find(candidates.begin(), candidates.end(), hoverRect_);
+        hoverIndex_ = hoverChoiceChanged_ && previous != candidates.end()
+            ? static_cast<int>(previous - candidates.begin()) : 0;
+        hoverCandidates_ = std::move(candidates);
+        hoverRect_ = hoverCandidates_[hoverIndex_];
+        update();
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
+void SelectionOverlay::updateDragSelection(const QPoint& point, Qt::KeyboardModifiers modifiers) {
+    dragCurrent_ = point;
+    if (std::max(std::abs(point.x() - dragOrigin_.x()), std::abs(point.y() - dragOrigin_.y())) >= kMinDragLogical)
+        pressedTarget_ = {};
+    snapActive_ = false;
+    if (!screenSnapshot_ || snapBypass_ || modifiers.testFlag(Qt::AltModifier)) { pressedTarget_ = {}; return; }
+    const QRect raw = rectBetween(dragOrigin_, dragCurrent_).intersected(rect());
+    lastSnap_ = core::snapRect({raw.x(), raw.y(), raw.width(), raw.height()}, snapCandidates_, kSnapThresholdLogical);
+    snapActive_ = lastSnap_.snapped();
 }
 
 void SelectionOverlay::commit(bool accepted) {
@@ -611,7 +716,7 @@ void SelectionOverlay::handleSelectClick(const QPoint& logicalPos) {
                    .arg(hit + 1)
                    .arg(items.size())
                    .arg(tool);
-        showToast(QStringLiteral("已选中「%1」 · 拖动移动 · 角柄缩放 · Delete 删除")
+        showToast(QStringLiteral("已选中%1：拖动移动，边角缩放")
                       .arg(tool));
     } else if (!items.empty()) {
         qInfo().noquote() << QStringLiteral("[jie2] 自由选中：未命中（点击处无标注）");
@@ -1013,19 +1118,30 @@ void SelectionOverlay::paintHint(QPainter& painter) const {
 
     QStringList parts;
     if (hasSelection_) {
-        parts << QStringLiteral("拖动八手柄调整选区 · 选区内拖拽绘制 · 工具见工具条");
-        parts << QStringLiteral("快捷键：%1 虚线 / %2 圆角 / %3 椭圆 / %4 双向箭头")
-                     .arg(keyLabel("style.dashed"), keyLabel("style.corner"),
-                          keyLabel("shape.ellipse"), keyLabel("arrow.both"));
+        parts << QStringLiteral("拖动边角调整范围 · 在选区内拖动标注");
+        parts << QStringLiteral("%1 虚线 / %2 圆角")
+                     .arg(keyLabel("style.dashed"), keyLabel("style.corner"));
+        parts << QStringLiteral("%1 椭圆 / %2 双向箭头")
+                     .arg(keyLabel("shape.ellipse"), keyLabel("arrow.both"));
+        parts << QStringLiteral("Delete 删除标注");
         parts << QStringLiteral("[ ] 粗细 · Ctrl+Z 撤销");
         parts << QStringLiteral("回车 / 双击确认");
     } else {
-        parts << QStringLiteral("拖拽选择截图区域");
+        parts << (hoverRect_.isEmpty() ? QStringLiteral("拖动鼠标，选择截图范围")
+                                      : QStringLiteral("单击选中，滚轮切换范围"));
+        if (screenSnapshot_ && !snapCandidates_.empty()) {
+#ifdef Q_OS_MACOS
+            parts << QStringLiteral("按住 Option 自由框选");
+#else
+            parts << QStringLiteral("按住 Alt 自由框选");
+#endif
+        }
+        if (screenSnapshot_ && accessibilityRequired_) parts << QStringLiteral("识别按钮需允许“辅助功能”");
     }
     parts << QStringLiteral("Esc 取消");
-    parts << QStringLiteral("C 复制色值");
+    parts << QStringLiteral("C 复制颜色");
     if (!historyPaths_.isEmpty()) {
-        parts << QStringLiteral(", / . 回放历史");
+        parts << QStringLiteral(", / . 查看历史");
     }
     if (recapture_) {
         parts << QStringLiteral("F5 刷新");
@@ -1072,10 +1188,12 @@ void SelectionOverlay::paintSelectionChrome(QPainter& painter,
     painter.setPen(QPen(kAccent, 1));
     painter.drawRect(selection.adjusted(0, 0, -1, -1));
 
-    // 八个圆形手柄：边中点与角点均可拖动。
-    painter.setPen(QPen(Qt::white, 1.2));
-    painter.setBrush(kAccent);
-    for (const auto& point : cropHandles()) painter.drawEllipse(QPointF(point), 5.5, 5.5);
+    // 悬停时只预览范围，确认后再显示可调整的手柄。
+    if (hasSelection_ || (dragging_ && pressedTarget_.isEmpty())) {
+        painter.setPen(QPen(Qt::white, 1.2));
+        painter.setBrush(kAccent);
+        for (const auto& point : cropHandles()) painter.drawEllipse(QPointF(point), 5.5, 5.5);
+    }
 
     // 与参考图一致，默认只显示尺寸；macOS 使用逻辑点并标注 pt。
 #ifdef Q_OS_MACOS
@@ -1215,8 +1333,8 @@ void SelectionOverlay::ensureOcrPanel() {
     header->addStretch();
     auto* close = new QToolButton(ocrPanel_);
     close->setObjectName("ocrClose");
-    close->setAccessibleName(QStringLiteral("关闭识别结果"));
-    close->setToolTip(QStringLiteral("关闭识别结果"));
+    close->setAccessibleName(QStringLiteral("关闭结果"));
+    close->setToolTip(QStringLiteral("关闭结果"));
     close->setAutoRaise(true);
     close->setFixedSize(24, 24);
     QPixmap closeIcon(32, 32); closeIcon.fill(Qt::transparent);
@@ -1330,16 +1448,16 @@ void SelectionOverlay::startOcr() {
     ocrPanel_->show();
     ocrPanel_->raise();
     if (ocrConfig_.endpoint.empty() || ocrConfig_.model.empty()) {
-        ocrStatus_->setText(QStringLiteral("请先在“设置 → 文字识别”中填写服务地址、模型名称和密钥。"));
+        ocrStatus_->setText(QStringLiteral("请先打开“设置 → 提取文字”连接服务"));
         return;
     }
     if (image.isNull()) {
-        ocrStatus_->setText(QStringLiteral("无法读取选区图像，请重新选择截图区域。"));
+        ocrStatus_->setText(QStringLiteral("图片无法读取，请重新选择截图区域"));
         return;
     }
     ocrBusy_ = true;
     ocrRetry_->setEnabled(false);
-    ocrStatus_->setText(QStringLiteral("正在识别，请稍候…"));
+    ocrStatus_->setText(QStringLiteral("正在提取文字…"));
     update();
     const auto result = std::make_shared<core::OcrResult>();
     auto* worker = QThread::create([config = ocrConfig_, image, result] {
@@ -1355,12 +1473,12 @@ void SelectionOverlay::startOcr() {
             return;
         }
         if (!result->ok) {
-            ocrStatus_->setText(QStringLiteral("识别失败：%1\n可以重新识别，或在设置中检查服务配置。")
+            ocrStatus_->setText(QStringLiteral("识别失败：%1\n请重试，或在设置中检查服务")
                 .arg(QString::fromStdString(result->error)));
         } else {
             const QString text = QString::fromStdString(result->text);
             ocrText_->setPlainText(text);
-            ocrStatus_->setText(text.trimmed().isEmpty() ? QStringLiteral("未识别到文字。") : QStringLiteral("识别完成，可选择或复制文字。"));
+            ocrStatus_->setText(text.trimmed().isEmpty() ? QStringLiteral("未识别到文字。") : QStringLiteral("已提取文字，可选中或复制"));
             ocrCopy_->setEnabled(!text.trimmed().isEmpty());
         }
         update();
@@ -1372,20 +1490,20 @@ const std::vector<SelectionOverlay::ToolbarItem>&
 SelectionOverlay::toolbarItems() {
     // 图标按钮保持紧凑；标签用于悬停提示。
     static const std::vector<ToolbarItem> items = {
-        {ToolbarButton::Tool, core::AnnotationTool::Rect, "形状（右键选择矩形、椭圆）", 32},
-        {ToolbarButton::Tool, core::AnnotationTool::Arrow, "箭头（右键调整样式和颜色）", 32},
-        {ToolbarButton::Tool, core::AnnotationTool::Pencil, "画笔（右键选择粗细和颜色）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Rect, "形状：右键选择矩形或椭圆", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Arrow, "箭头：右键调整样式和颜色", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Pencil, "画笔：右键选择粗细和颜色", 32},
         {ToolbarButton::Tool, core::AnnotationTool::Marker, "荧光笔", 32},
-        {ToolbarButton::Tool, core::AnnotationTool::Mosaic, "马赛克（右键选择模糊、放大镜）", 32},
-        {ToolbarButton::Tool, core::AnnotationTool::Text, "文字（右键选择序号）", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Mosaic, "马赛克：右键选择模糊或放大镜", 32},
+        {ToolbarButton::Tool, core::AnnotationTool::Text, "文字：右键切换序号", 32},
         {ToolbarButton::Tool, core::AnnotationTool::Eraser, "橡皮擦", 32},
         {ToolbarButton::Undo, core::AnnotationTool::Rect, "撤销", 32},
         {ToolbarButton::Redo, core::AnnotationTool::Rect, "重做", 32},
-        {ToolbarButton::Ocr, core::AnnotationTool::Rect, "OCR · 识别选区文字", 32},
+        {ToolbarButton::Ocr, core::AnnotationTool::Rect, "提取文字", 32},
         {ToolbarButton::Cancel, core::AnnotationTool::Rect, "取消截图", 32},
         {ToolbarButton::Pin, core::AnnotationTool::Rect, "贴到屏幕", 32},
-        {ToolbarButton::Save, core::AnnotationTool::Rect, "保存到文件", 32},
-        {ToolbarButton::Copy, core::AnnotationTool::Rect, "复制图像", 32},
+        {ToolbarButton::Save, core::AnnotationTool::Rect, "保存图片", 32},
+        {ToolbarButton::Copy, core::AnnotationTool::Rect, "复制图片", 32},
     };
     return items;
 }
@@ -1493,11 +1611,11 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
             painter.drawRect(QRectF(6, 12, 8, 6));
         } else if (item.action == ToolbarButton::Copy) {
             painter.drawRoundedRect(QRectF(5, 5, 11, 13), 1.5, 1.5);
-            painter.drawPolyline(QPolygonF{QPointF(13, 2), QPointF(2, 2), QPointF(2, 14)});
+            painter.drawPolyline(QPolygonF(QVector<QPointF>{QPointF(13, 2), QPointF(2, 2), QPointF(2, 14)}));
         } else if (item.action == ToolbarButton::Pin) {
             painter.save(); painter.translate(10, 10); painter.rotate(42);
             painter.setBrush(foreground);
-            painter.drawPolygon(QPolygonF{QPointF(-4,-8),QPointF(4,-8),QPointF(3,-5),QPointF(3,1),QPointF(6,4),QPointF(-6,4),QPointF(-3,1),QPointF(-3,-5)});
+            painter.drawPolygon(QPolygonF(QVector<QPointF>{QPointF(-4,-8),QPointF(4,-8),QPointF(3,-5),QPointF(3,1),QPointF(6,4),QPointF(-6,4),QPointF(-3,1),QPointF(-3,-5)}));
             painter.drawLine(0, 4, 0, 12); painter.restore();
         } else if (item.action == ToolbarButton::Undo || item.action == ToolbarButton::Redo) {
             if (item.action == ToolbarButton::Redo) { painter.translate(20, 0); painter.scale(-1, 1); }
@@ -1514,8 +1632,8 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
                     painter.drawEllipse(QRectF(8, 9, 10, 7)); break;
                 case core::AnnotationTool::Ellipse: painter.drawEllipse(QRectF(3, 4, 14, 12)); break;
                 case core::AnnotationTool::Arrow:
-                    painter.drawPolyline(QPolygonF{QPointF(2, 15), QPointF(7, 9), QPointF(12, 12), QPointF(17, 4)});
-                    painter.setBrush(foreground); painter.drawPolygon(QPolygonF{QPointF(13, 5), QPointF(19, 2), QPointF(17, 8)}); break;
+                    painter.drawPolyline(QPolygonF(QVector<QPointF>{QPointF(2, 15), QPointF(7, 9), QPointF(12, 12), QPointF(17, 4)}));
+                    painter.setBrush(foreground); painter.drawPolygon(QPolygonF(QVector<QPointF>{QPointF(13, 5), QPointF(19, 2), QPointF(17, 8)})); break;
                 case core::AnnotationTool::Text:
                     painter.drawLine(4, 4, 16, 4); painter.drawLine(10, 4, 10, 17); painter.drawLine(7, 17, 13, 17); break;
                 case core::AnnotationTool::Number:
@@ -1532,12 +1650,12 @@ void SelectionOverlay::paintToolbar(QPainter& painter,
                     for (int row=0; row<3; ++row) { QPen pen(foreground, 3-row*.7); painter.setPen(pen); painter.drawLine(4, 5+row*5, 16, 5+row*5); } break;
                 case core::AnnotationTool::Eraser:
                     painter.setBrush(foreground);
-                    painter.drawPolygon(QPolygonF{QPointF(3, 12), QPointF(11, 3), QPointF(18, 9), QPointF(11, 17), QPointF(8, 17)}); painter.drawLine(7, 8, 14, 14); break;
+                    painter.drawPolygon(QPolygonF(QVector<QPointF>{QPointF(3, 12), QPointF(11, 3), QPointF(18, 9), QPointF(11, 17), QPointF(8, 17)})); painter.drawLine(7, 8, 14, 14); break;
                 case core::AnnotationTool::Marker:
                     painter.setPen(QPen(foreground, 5, Qt::SolidLine, Qt::FlatCap)); painter.drawLine(6, 13, 15, 4);
                     painter.setPen(QPen(foreground, 1.6)); painter.drawLine(3, 18, 17, 18); break;
                 case core::AnnotationTool::Pencil:
-                    painter.drawPolygon(QPolygonF{QPointF(3, 17), QPointF(5, 11), QPointF(14, 2), QPointF(18, 6), QPointF(9, 15)}); break;
+                    painter.drawPolygon(QPolygonF(QVector<QPointF>{QPointF(3, 17), QPointF(5, 11), QPointF(14, 2), QPointF(18, 6), QPointF(9, 15)})); break;
             }
         }
         painter.restore();
@@ -1600,7 +1718,7 @@ void SelectionOverlay::showToolMenu(int index, const QPoint& globalPos) {
         auto* action = widthMenu->addAction(QString::number(width));
         connect(action, &QAction::triggered, this, [this, width] { currentWidth_ = width; update(); });
     }
-    menu.exec(globalPos);
+    execContextMenu(&menu, globalPos);
 }
 
 void SelectionOverlay::paintMagnifier(QPainter& painter) {
@@ -1673,10 +1791,11 @@ void SelectionOverlay::paintMagnifier(QPainter& painter) {
 }
 
 void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
+    snapBypass_ = event->modifiers().testFlag(Qt::AltModifier);
     if (event->button() == Qt::RightButton) {
         int index = -1;
         if (toolbarHitTest(event->pos(), &index) == ToolbarButton::Tool) {
-            showToolMenu(index, event->globalPosition().toPoint());
+            showToolMenu(index, mouseGlobalPosition(event));
             return;
         }
     }
@@ -1727,7 +1846,7 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
                 qInfo().noquote() << QStringLiteral("[jie2] 切换工具：%1")
                                          .arg(QString::fromUtf8(
                                              toolDisplayName(currentTool_)));
-                showToast(QStringLiteral("工具：%1 · 滚轮调粗细 · Ctrl+Z 撤销")
+                showToast(QStringLiteral("工具：%1 · 滚轮调粗细")
                               .arg(QString::fromUtf8(
                                   toolDisplayName(currentTool_))));
             }
@@ -1867,6 +1986,9 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
+    if (!hasSelection_) updateHoverTarget(event->pos(), event->modifiers().testFlag(Qt::AltModifier));
+    pressedTarget_ = !hasSelection_ ? hoverRect_ : QRect();
+    clearHoverTarget();
     dragging_ = true;
     hasSelection_ = false;
     selectionRect_ = QRect();
@@ -1881,13 +2003,15 @@ void SelectionOverlay::mousePressEvent(QMouseEvent* event) {
 void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
     if (cropHandle_ >= 0 || movingCrop_) { updateCropGesture(event->pos()); return; }
     cursor_ = event->pos();
+    snapBypass_ = event->modifiers().testFlag(Qt::AltModifier);
+    if (!dragging_) updateHoverTarget(cursor_, event->modifiers().testFlag(Qt::AltModifier));
     int hover = -1;
     toolbarHitTest(cursor_, &hover);
     if (hover != toolbarHover_) {
         toolbarHover_ = hover;
         QToolTip::hideText();
         if (hover >= 0) {
-            QToolTip::showText(event->globalPosition().toPoint(),
+            QToolTip::showText(mouseGlobalPosition(event),
                               QString::fromUtf8(toolbarItems()[hover].label), this);
         }
     }
@@ -1957,17 +2081,18 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent* event) {
                 break;
         }
     } else if (dragging_) {
-        dragCurrent_ = event->pos();
-        // 窗口吸附（M1）：四条边各自尝试吸附到候选窗口边缘。
-        // 阈值用逻辑点（8pt）—— 与手感相关，与缩放无关。
-        const QRect raw = rectBetween(dragOrigin_, dragCurrent_).intersected(rect());
-        const core::SnapResult snap =
-            core::snapRect(core::Rect{raw.x(), raw.y(), raw.width(), raw.height()},
-                           snapCandidates_, kSnapThresholdLogical);
-        snapActive_ = snap.snapped();
-        lastSnap_ = snap;
+        updateDragSelection(event->pos(), event->modifiers());
     }
     update();
+}
+
+void SelectionOverlay::leaveEvent(QEvent* event) {
+    if (!hasSelection_ && !dragging_) {
+        clearHoverTarget();
+        hasCursor_ = false;
+        update();
+    }
+    QDialog::leaveEvent(event);
 }
 
 void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
@@ -2040,9 +2165,10 @@ void SelectionOverlay::mouseReleaseEvent(QMouseEvent* event) {
     // 先取终点再结算选区：currentSelection() 在非拖拽且无选区时返回空，
     // 而 hasSelection_ 此刻还是 false —— 必须先把拖拽状态用于计算，
     // 之后再翻转 dragging_（早期版本顺序写反，选区永远登记不上）。
-    dragCurrent_ = event->pos();
+    updateDragSelection(event->pos(), event->modifiers());
     const QRect selection = currentSelection();
     dragging_ = false;
+    pressedTarget_ = {};
     hasSelection_ = selection.width() >= kMinDragLogical &&
                     selection.height() >= kMinDragLogical;
     // 结算：把（可能已吸附的）选区固定下来，之后各绘制路径都读它。
@@ -2066,6 +2192,19 @@ void SelectionOverlay::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void SelectionOverlay::wheelEvent(QWheelEvent* event) {
+    if (!hasSelection_ && !dragging_ && !event->modifiers().testFlag(Qt::AltModifier) && !snapBypass_) {
+        updateHoverTarget(wheelPosition(event));
+        const int delta = event->angleDelta().y();
+        if (delta && !hoverCandidates_.empty()) {
+            hoverIndex_ = qBound(0, hoverIndex_ + (delta < 0 ? 1 : -1),
+                static_cast<int>(hoverCandidates_.size()) - 1);
+            hoverChoiceChanged_ = true;
+            hoverRect_ = hoverCandidates_[hoverIndex_];
+            update();
+            event->accept();
+            return;
+        }
+    }
     if (hasSelection_) {
         const int delta = event->angleDelta().y();
         if (delta != 0) {
@@ -2140,6 +2279,14 @@ bool SelectionOverlay::event(QEvent* event) {
 }
 
 void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Alt) {
+        snapBypass_ = true;
+        clearHoverTarget();
+        if (dragging_) updateDragSelection(dragCurrent_, event->modifiers());
+        update();
+        event->accept();
+        return;
+    }
     if (ocrPanel_ && ocrPanel_->isVisible() && ocrPanel_->isAncestorOf(focusWidget())) {
         if (event->key() == Qt::Key_Escape) { ocrPanel_->hide(); setFocus(); }
         event->accept();
@@ -2154,28 +2301,28 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
     if (shortcuts_.matches("tool.text", shortcutKey, scMods)) {
         currentTool_ = core::AnnotationTool::Text;
         toolChosen_ = true;
-        showToast(QStringLiteral("工具：文字（点击位置输入）"));
+        showToast(QStringLiteral("文字：点击要写字的位置"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.number", shortcutKey, scMods)) {
         currentTool_ = core::AnnotationTool::Number;
         toolChosen_ = true;
-        showToast(QStringLiteral("工具：序号（点击放置，自动编号）"));
+        showToast(QStringLiteral("序号：点击放置，自动编号"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.eraser", shortcutKey, scMods)) {
         currentTool_ = core::AnnotationTool::Eraser;
         toolChosen_ = true;
-        showToast(QStringLiteral("工具：橡皮擦（拖过即删除该标注）"));
+        showToast(QStringLiteral("橡皮擦：拖过即可删除标注"));
         update();
         return;
     }
     if (shortcuts_.matches("tool.magnifier", shortcutKey, scMods)) {
         currentTool_ = core::AnnotationTool::Magnifier;
         toolChosen_ = true;
-        showToast(QStringLiteral("工具：放大镜（拖出要放大的区域）"));
+        showToast(QStringLiteral("放大镜：拖动选择要放大的范围"));
         update();
         return;
     }
@@ -2190,14 +2337,14 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         cornerRadius_ = (cornerRadius_ + 8) % 32;
         showToast(cornerRadius_ > 0
                       ? QStringLiteral("圆角矩形：半径 %1").arg(cornerRadius_)
-                      : QStringLiteral("圆角矩形：关（直角）"));
+                      : QStringLiteral("矩形：直角"));
         update();
         return;
     }
     if (shortcuts_.matches("shape.ellipse", shortcutKey, scMods)) {
         ellipseShape_ = !ellipseShape_;
         showToast(ellipseShape_
-                      ? QStringLiteral("形状：椭圆（对马克笔/马赛克/模糊/橡皮擦生效）")
+                      ? QStringLiteral("椭圆：荧光笔、马赛克、模糊、橡皮擦")
                       : QStringLiteral("形状：矩形"));
         update();
         return;
@@ -2311,7 +2458,7 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
         if (event->modifiers().testFlag(Qt::ShiftModifier)) {
             eraserAngle_ = (eraserAngle_ + delta * 15 + 360) % 360;
             // toast 会同步写日志（"[jie2] 橡皮擦区域旋转：N°…"），测试据此断言。
-            showToast(QStringLiteral("橡皮擦区域旋转：%1°（Shift+[ ] 调整）")
+            showToast(QStringLiteral("旋转 %1° · Shift+[ ]")
                           .arg(eraserAngle_));
         } else {
             currentWidth_ = qBound(1, currentWidth_ + delta, 24);
@@ -2350,7 +2497,7 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
             }
             const QString hex = color.name(QColor::HexRgb).toUpper();
             QApplication::clipboard()->setText(hex);
-            toast_ = QStringLiteral("已复制色值 %1（继续截图会覆盖剪贴板）").arg(hex);
+            toast_ = QStringLiteral("已复制 %1；完成截图后会改为图片").arg(hex);
             QTimer::singleShot(1800, this, [this]() {
                 toast_.clear();
                 update();
@@ -2401,6 +2548,17 @@ void SelectionOverlay::keyPressEvent(QKeyEvent* event) {
     QDialog::keyPressEvent(event);
 }
 
+void SelectionOverlay::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Alt) {
+        snapBypass_ = false;
+        updateHoverTarget(cursor_);
+        update();
+        event->accept();
+        return;
+    }
+    QDialog::keyReleaseEvent(event);
+}
+
 void SelectionOverlay::showEvent(QShowEvent* event) {
     QDialog::showEvent(event);
     // 窗口句柄此刻才确定：再次关联目标屏并铺满，避免落到主屏或残留尺寸。
@@ -2426,6 +2584,14 @@ void SelectionOverlay::showEvent(QShowEvent* event) {
         activateWindow();
         setFocus();
         promoteToFront();
+        if (!hasCursor_) {
+            cursor_ = mapFromGlobal(QCursor::pos());
+            if (rect().contains(cursor_)) {
+                hasCursor_ = true;
+                updateHoverTarget(cursor_, QApplication::keyboardModifiers().testFlag(Qt::AltModifier));
+                update();
+            }
+        }
     });
 }
 

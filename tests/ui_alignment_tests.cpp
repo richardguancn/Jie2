@@ -18,6 +18,9 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QCheckBox>
+#include <QThread>
+#include <QProcess>
+#include <atomic>
 #include "ui/settings_dialog.h"
 #include "ui/ocr_runner.h"
 #include <QSignalSpy>
@@ -35,10 +38,18 @@
 #include "ui/clothesline.h"
 #include "ui/pin_window.h"
 #include "ui/selection_overlay.h"
+#include "ui/system_menu.h"
+#ifdef Q_OS_MACOS
+#include "native_menu_test_support.h"
+#endif
 
 namespace jie2::ui {
 class MenuTestPlatform final : public platform::Platform {
 public:
+    bool needsElementPermission = false;
+    int permissionRequests = 0;
+    platform::ElementLocator createElementLocator() const override { return {{}, needsElementPermission}; }
+    bool requestElementAccess() override { ++permissionRequests; return false; }
     mutable int captures = 0;
     mutable int recognitions = 0;
     std::string name() const override { return "menu-test"; }
@@ -115,12 +126,17 @@ private slots:
         QVERIFY(!parseHotkeyText("hyper+t", &spec));       // 未知修饰键
         // 默认值必须可解析，且 macOS 默认用 Command 而不是 Ctrl。
         QVERIFY(parseHotkeyText(defaultHotkeyText('t'), &spec));
+#ifdef Q_OS_LINUX
+        QCOMPARE(spec.key, Key::F1);
+        QCOMPARE(spec.modifiers, 0u);
+#else
         QCOMPARE(spec.key, Key::T);
 #ifdef Q_OS_MACOS
         QCOMPARE(spec.modifiers, unsigned(kModSuper | kModAlt));
         QVERIFY(QString::fromStdString(displayHotkey(spec)).contains("Cmd"));
 #else
         QCOMPARE(spec.modifiers, unsigned(kModCtrl | kModAlt));
+#endif
 #endif
     }
     // 设置界面必须能改全局快捷键，且写错格式要有提示、不静默保存。
@@ -131,8 +147,8 @@ private slots:
         QVERIFY(field("hotkey.snip") != nullptr);
         QVERIFY(field("hotkey.pin") != nullptr);
         QVERIFY(field("hotkey.save_clipboard") != nullptr);
-        // 默认值按平台给（macOS = cmd+alt+…）。
-        QVERIFY(field("hotkey.snip")->text().contains("alt"));
+        // Linux 默认 F1，macOS 默认 cmd+alt+t，其余平台按平台定义。
+        QCOMPARE(field("hotkey.snip")->text(), QString::fromStdString(platform::defaultHotkeyText('t')));
         field("hotkey.snip")->setText("cmd+shift+9");
         QCOMPARE(dialog.configuration().get("hotkey.snip"), std::string("cmd+shift+9"));
         auto* buttons = dialog.findChild<QDialogButtonBox*>();
@@ -196,20 +212,20 @@ private slots:
         SelectionOverlay overlay(image, 1, nullptr, options);
         overlay.show();
         QTest::keyClick(&overlay, Qt::Key_Left);
-        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+        QCOMPARE(static_cast<int>(overlay.currentTool_), static_cast<int>(core::AnnotationTool::Text));
         QVERIFY(overlay.isVisible());
         core::ShortcutSpec tab; QVERIFY(core::parseShortcutSpec("tab", &tab));
         overlay.shortcuts_.set("tool.text", tab);
         overlay.currentTool_ = core::AnnotationTool::Arrow;
         QTest::keyClick(&overlay, Qt::Key_Tab);
-        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+        QCOMPARE(static_cast<int>(overlay.currentTool_), static_cast<int>(core::AnnotationTool::Text));
         local->actions().first()->trigger();
         QCOMPARE(local->text(), QString("none"));
         // 数字不应被旧的固定工具选择提前吃掉。
         core::ShortcutSpec digit; QVERIFY(core::parseShortcutSpec("3", &digit));
         overlay.shortcuts_.set("tool.text", digit);
         QTest::keyClick(&overlay, Qt::Key_3);
-        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Text);
+        QCOMPARE(static_cast<int>(overlay.currentTool_), static_cast<int>(core::AnnotationTool::Text));
     }
     void simplifiedSettings() {
         SettingsDialog dialog({}); dialog.show();
@@ -226,6 +242,257 @@ private slots:
         QTest::mouseClick(round, Qt::LeftButton);
         QVERIFY(!radius->isVisible());
         QCOMPARE(dialog.configuration().getInt("output.round.radius"), 36);
+    }
+
+    void compactSettingsCopy() {
+        SettingsDialog dialog({});
+        for (auto* label : dialog.findChildren<QLabel*>()) {
+            const auto role = label->objectName();
+            const auto text = label->text();
+            if (role == "rowLabel" || role == "pageTitle" || role == "sectionCaption") {
+                if (text == "Esc" || text == "Shift + Esc") continue;
+                QVERIFY2(text.size() >= 2 && text.size() <= 4, qPrintable(text));
+            }
+            if (role == "pageDescription" || role == "rowDescription" || role == "sectionHelp")
+                QVERIFY2(text.size() <= 20, qPrintable(text));
+        }
+    }
+
+    void elementAccessGuidance() {
+        auto backend = std::make_unique<MenuTestPlatform>();
+        auto* probe = backend.get(); probe->needsElementPermission = true;
+        TrayController controller(std::move(backend));
+        controller.showCapabilities();
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(box); QVERIFY(box->text().contains("按钮识别：需允许辅助功能"));
+        QAbstractButton* allow = nullptr;
+        for (auto* button : box->buttons()) if (button->text() == "允许识别") allow = button;
+        QVERIFY(allow);
+        QTest::mouseClick(allow, Qt::LeftButton);
+        QCOMPARE(probe->permissionRequests, 1);
+        box->close();
+    }
+
+    void hoverWindowSelection() {
+        SelectionOverlay::Options options;
+        options.snapCandidates = {{100, 100, 240, 180}, {20, 20, 500, 400}};
+        QPixmap image(1280, 960); image.fill(QColor("#c67845"));
+        SelectionOverlay overlay(image, 2, nullptr, options); overlay.show();
+        QTest::mouseMove(&overlay, QPoint(150, 150));
+        QCOMPARE(overlay.currentSelection(), QRect(100, 100, 240, 180));
+        QVERIFY(!overlay.hasSelection_);
+        QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(150, 150));
+        QVERIFY(overlay.hasSelection_);
+        QCOMPARE(overlay.selectionRect_, QRect(100, 100, 240, 180));
+        QTest::keyClick(&overlay, Qt::Key_Return);
+        QCOMPARE(overlay.outcome().pixelRegion, QRect(200, 200, 480, 360));
+        QCOMPARE(overlay.outcome().outputImage.size(), QSize(480, 360));
+        QCOMPARE(overlay.outcome().outputImage.pixelColor(10, 10), QColor("#c67845"));
+    }
+
+    void hoverElementsAndBypass() {
+        SelectionOverlay::Options options;
+        options.snapTargets = [] {
+            return SelectionSnapTargets{{{80, 70, 400, 300}}, [](core::Point) {
+                return std::vector<core::Rect>{{120, 110, 80, 30}, {100, 90, 180, 100}};
+            }, false};
+        };
+        QPixmap image(640, 480); image.fill(Qt::white);
+        SelectionOverlay overlay(image, 1, nullptr, options); overlay.show();
+        const QPoint point(140, 120);
+        QTest::mouseMove(&overlay, point);
+        QTRY_COMPARE(overlay.hoverRect_, QRect(120, 110, 80, 30));
+        QCOMPARE(overlay.hoverCandidates_.size(), std::size_t(3));
+        auto wheel = [&](int delta) {
+            QWheelEvent event(QPointF(point), QPointF(overlay.mapToGlobal(point)), QPoint(), QPoint(0, delta),
+                Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(&overlay, &event);
+        };
+        wheel(-120); QCOMPARE(overlay.hoverRect_, QRect(100, 90, 180, 100));
+        wheel(-120); QCOMPARE(overlay.hoverRect_, QRect(80, 70, 400, 300));
+        wheel(120); QCOMPARE(overlay.hoverRect_, QRect(100, 90, 180, 100));
+        QTest::keyPress(&overlay, Qt::Key_Alt); QVERIFY(overlay.hoverRect_.isEmpty());
+        QTest::keyRelease(&overlay, Qt::Key_Alt);
+        QTRY_COMPARE(overlay.hoverRect_, QRect(120, 110, 80, 30));
+        QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier, point);
+        QCOMPARE(overlay.selectionRect_, QRect(120, 110, 80, 30));
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty()) QVERIFY(overlay.grab().save(folder + "/element-selected.png"));
+        QTest::keyClick(&overlay, Qt::Key_Return);
+        QCOMPARE(overlay.outcome().outputImage.size(), QSize(80, 30));
+    }
+
+    void hoverDragAndScreenEdges() {
+        SelectionOverlay::Options options;
+        options.snapCandidates = {{-40, 40, 180, 140}, {200, 100, 160, 140}};
+        QPixmap image(640, 480); image.fill(Qt::white);
+        SelectionOverlay overlay(image, 1, nullptr, options); overlay.show();
+        QTest::mouseMove(&overlay, QPoint(10, 70));
+        QCOMPARE(overlay.hoverRect_, QRect(0, 40, 140, 140));
+        QTest::mouseMove(&overlay, QPoint(500, 400)); QVERIFY(overlay.currentSelection().isEmpty());
+        QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(500, 400));
+        QVERIFY(!overlay.hasSelection_);
+        QTest::mousePress(&overlay, Qt::LeftButton, Qt::AltModifier, QPoint(202, 102));
+        QTest::mouseMove(&overlay, QPoint(357, 237));
+        QTest::mouseRelease(&overlay, Qt::LeftButton, Qt::AltModifier, QPoint(357, 237));
+        QCOMPARE(overlay.selectionRect_, QRect(202, 102, 155, 135));
+        QVERIFY(!overlay.snapActive_);
+        QTest::keyRelease(&overlay, Qt::Key_Alt);
+    }
+
+    void staleElementResultIsIgnored() {
+        auto calls = std::make_shared<std::atomic<int>>(0);
+        SelectionOverlay::Options options;
+        options.snapTargets = [calls] {
+            return SelectionSnapTargets{{{40, 50, 500, 300}}, [calls](core::Point point) {
+                ++*calls; QThread::msleep(100);
+                return std::vector<core::Rect>{{point.x - 10, point.y - 10, 40, 30}};
+            }, false};
+        };
+        QPixmap image(640, 480); image.fill(Qt::white);
+        auto overlay = std::make_unique<SelectionOverlay>(image, 1, nullptr, options); overlay->show();
+        QTest::mouseMove(overlay.get(), QPoint(100, 100));
+        QTRY_VERIFY(calls->load() > 0);
+        QTest::mouseMove(overlay.get(), QPoint(300, 200));
+        QTRY_COMPARE(overlay->hoverRect_, QRect(290, 190, 40, 30));
+        QTest::mouseMove(overlay.get(), QPoint(200, 150));
+        QTRY_VERIFY(overlay->elementQueryRunning_);
+        QTest::mouseClick(overlay.get(), Qt::LeftButton, Qt::NoModifier, QPoint(200, 150));
+        const QRect fixed = overlay->selectionRect_;
+        QTest::qWait(150);
+        QCOMPARE(overlay->selectionRect_, fixed);
+        QCOMPARE(fixed, QRect(40, 50, 500, 300));
+        overlay->hasSelection_ = false;
+        QTest::mouseMove(overlay.get(), QPoint(220, 180));
+        QTRY_VERIFY(overlay->elementQueryRunning_);
+        overlay.reset();
+        QTest::qWait(150); // 后台结果返回时，已关闭的截图窗口不得再被访问。
+    }
+
+    void hoverSnapshotRefreshAndImageMode() {
+        auto snapshots = std::make_shared<int>(0);
+        SelectionOverlay::Options options;
+        options.snapTargets = [snapshots] {
+            const int x = (++*snapshots == 1) ? 40 : 240;
+            return SelectionSnapTargets{{{x, 60, 180, 120}}, {}, true};
+        };
+        QPixmap image(640, 480); image.fill(Qt::white);
+        options.recapture = [image] { return image; };
+        SelectionOverlay overlay(image, 1, nullptr, options); overlay.show();
+        QVERIFY(overlay.accessibilityRequired_);
+        QTest::mouseMove(&overlay, QPoint(80, 80)); QCOMPARE(overlay.hoverRect_, QRect(40, 60, 180, 120));
+        overlay.recapture();
+        QTest::mouseMove(&overlay, QPoint(80, 80)); QVERIFY(overlay.hoverRect_.isEmpty());
+        QTest::mouseMove(&overlay, QPoint(280, 80)); QCOMPARE(overlay.hoverRect_, QRect(240, 60, 180, 120));
+        overlay.setFrozenImage(image.toImage(), false);
+        overlay.updateHoverTarget(QPoint(280, 80)); QVERIFY(overlay.hoverRect_.isEmpty());
+        QTest::mousePress(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(242, 62));
+        QTest::mouseMove(&overlay, QPoint(418, 178));
+        QTest::mouseRelease(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(418, 178));
+        QCOMPARE(overlay.selectionRect_, QRect(242, 62, 176, 116));
+    }
+
+    void nativeWindowAndElementSnap() {
+#ifdef Q_OS_MACOS
+        if (QGuiApplication::platformName() != "cocoa") QSKIP("需要 macOS 桌面");
+        const QString fixturePath = qEnvironmentVariable("JIE2_SNAP_FIXTURE");
+        if (fixturePath.isEmpty()) QSKIP("需要独立的原生测试窗口");
+        QTemporaryDir fixtureData;
+        const QString infoPath = fixtureData.filePath("window.json");
+        const QString errorPath = fixtureData.filePath("window.log");
+        QProcess fixture;
+        fixture.start(QStringLiteral("/usr/bin/open"), {"-n", "-W", "--stdout", infoPath, "--stderr", errorPath, fixturePath});
+        QVERIFY(fixture.waitForStarted());
+        int fixturePid = 0;
+        const auto stop = qScopeGuard([&] {
+            if (fixturePid > 1) QProcess::execute("/bin/kill", {"-TERM", QString::number(fixturePid)});
+            if (!fixture.waitForFinished(2000)) { fixture.kill(); fixture.waitForFinished(); }
+        });
+        QJsonObject info;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QFile file(infoPath);
+            if (!file.open(QIODevice::ReadOnly)) return false;
+            info = QJsonDocument::fromJson(file.readAll()).object();
+            fixturePid = info["pid"].toInt();
+            return info.contains("window") && fixturePid > 1;
+        })(), 7000);
+        auto region = [&](const char* name) {
+            const auto a = info[name].toArray();
+            return QRect(a[0].toInt(), a[1].toInt(), a[2].toInt(), a[3].toInt());
+        };
+        const QRect window = region("window"), button = region("button");
+        QVERIFY(!window.isEmpty()); QVERIFY(window.contains(button));
+        auto backend = platform::createPlatform();
+        std::vector<core::Rect> windows;
+        bool found = false;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            windows = backend->windowRects();
+            for (const auto& item : windows)
+                if (QRect(item.x, item.y, item.width, item.height) == window) return found = true;
+            return false;
+        })(), 3000);
+        auto locator = backend->createElementLocator();
+        if (locator.rectanglesAt) {
+            const auto detected = locator.rectanglesAt({button.center().x(), button.center().y()});
+            bool controlFound = false;
+            for (const auto& item : detected) {
+                const QRect candidate(item.x, item.y, item.width, item.height);
+                if (button.contains(candidate) && candidate.contains(button.center())) controlFound = true;
+            }
+            QVERIFY2(controlFound, qPrintable(QString("原生按钮范围 %1,%2 %3x%4，返回 %5 个候选")
+                .arg(button.x()).arg(button.y()).arg(button.width()).arg(button.height()).arg(detected.size())));
+        }
+        SelectionOverlay::Options options;
+        options.promoteWindow = [&backend](void* window) { return backend->promoteOverlayWindow(window); };
+        options.snapTargets = [windows, locator] {
+            return SelectionSnapTargets{windows, locator.rectanglesAt, locator.accessibilityRequired};
+        };
+        QScreen* screen = QGuiApplication::primaryScreen();
+        QPixmap image(screen->geometry().size()); image.fill(Qt::white);
+        double scale = 1;
+        bool captured = false;
+        const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
+        if (!folder.isEmpty()) {
+            for (const auto& display : backend->displays()) {
+                if (!display.isPrimary) continue;
+                const auto frame = backend->captureDisplay(display.id);
+                if (frame.ok) {
+                    const auto format = frame.image.format() == core::PixelFormat::RGBA8888
+                        ? QImage::Format_RGBA8888 : QImage::Format_ARGB32;
+                    image = QPixmap::fromImage(QImage(frame.image.data(), frame.image.width(), frame.image.height(),
+                        static_cast<int>(frame.image.stride()), format).copy());
+                    scale = double(image.width()) / screen->geometry().width();
+                    captured = true;
+                }
+            }
+        }
+        SelectionOverlay overlay(image, scale, screen, options); overlay.show();
+        const QPoint point = button.center() - screen->geometry().topLeft();
+        QTest::mouseMove(&overlay, point);
+        if (!locator.rectanglesAt) {
+            QVERIFY(locator.accessibilityRequired);
+            QCOMPARE(overlay.hoverRect_, window.translated(-screen->geometry().topLeft()));
+            qWarning("窗口吸附已验证；当前测试应用未获得辅助功能权限，未实测跨应用元素识别。");
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(!overlay.hoverRect_.isEmpty() && overlay.hoverRect_.contains(point) &&
+                button.contains(overlay.hoverRect_.translated(screen->geometry().topLeft())), 3000);
+            const QRect target = overlay.hoverRect_;
+            QVERIFY(target.contains(point));
+            QVERIFY2(button.contains(target.translated(screen->geometry().topLeft())),
+                qPrintable(QString("button=%1,%2 %3x%4 target=%5,%6 %7x%8")
+                    .arg(button.x()).arg(button.y()).arg(button.width()).arg(button.height())
+                    .arg(target.x()).arg(target.y()).arg(target.width()).arg(target.height())));
+            if (captured) QVERIFY(overlay.grab(window.translated(-screen->geometry().topLeft()))
+                .save(folder + "/native-button-hover.png"));
+            QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier, point);
+            QCOMPARE(overlay.selectionRect_, target);
+            QTest::keyClick(&overlay, Qt::Key_Return);
+            QCOMPARE(overlay.outcome().outputImage.size(), overlay.selectionToPixelRegion(target).size());
+            if (captured) QVERIFY(overlay.outcome().outputImage.save(folder + "/native-button-capture.png"));
+        }
+#else
+        QSKIP("需要 macOS 桌面");
+#endif
     }
 
     void choiceSettingsControls() {
@@ -382,11 +649,13 @@ private slots:
         QVERIFY(controller.systemCaptureWatcher_ != nullptr);
         // 配置文件不存在时也必须拿到可用的默认全局快捷键
         // （回归点：默认值曾因 loadConfig 提前 return 而留成空规格）。
-        QCOMPARE(controller.snipHotkeySpec_.key, platform::Key::T);
-        QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModAlt) != 0);
-#ifdef Q_OS_MACOS
+        platform::HotkeySpec defaultSnip;
+        QVERIFY(platform::parseHotkeyText(platform::defaultHotkeyText('t'), &defaultSnip));
+        QCOMPARE(controller.snipHotkeySpec_.key, defaultSnip.key);
+        QCOMPARE(controller.snipHotkeySpec_.modifiers, defaultSnip.modifiers);
+#if defined(Q_OS_MACOS)
         QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModSuper) != 0);
-#else
+#elif !defined(Q_OS_LINUX)
         QVERIFY((controller.snipHotkeySpec_.modifiers & platform::kModCtrl) != 0);
 #endif
         // 启动时的扫描只登记、不挂载：旧截图不能一次性被搬上衣架。
@@ -398,7 +667,6 @@ private slots:
             image.fill(Qt::darkBlue);
             QVERIFY(image.save(notAShot));
         }
-        const std::size_t before = controller.history_.entries().size();
         // 模拟系统刚截好一张图（macOS 中文名 / 英文名都要认）。
         const QString newShot = shots.filePath("Screen Shot 2026-02-02 at 10.11.12.png");
         {
@@ -407,7 +675,9 @@ private slots:
             QVERIFY(image.save(newShot));
         }
         // 目录事件 + 300ms 去抖后由定时器扫描。
-        QTRY_VERIFY_WITH_TIMEOUT(controller.history_.entries().size() > before, 5000);
+        // 暂存数量有上限，达到上限时新图会替换旧图，不能要求总数继续增长。
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.history_.entries().empty() &&
+            controller.history_.entries().back().path == newShot.toStdString(), 5000);
         QCOMPARE(controller.history_.entries().back().path, newShot.toStdString());
         QCOMPARE(controller.history_.entries().back().width, 64);
         // 旧截图与普通图片都没被挂上。
@@ -846,7 +1116,7 @@ private slots:
         overlay.show();
         const QPoint tool = overlay.toolbarButtonRect(overlay.currentSelection(), 1).center();
         QTest::mouseClick(&overlay, Qt::LeftButton, Qt::NoModifier, tool);
-        QCOMPARE(overlay.currentTool_, core::AnnotationTool::Arrow);
+        QCOMPARE(static_cast<int>(overlay.currentTool_), static_cast<int>(core::AnnotationTool::Arrow));
         QTest::mouseDClick(&overlay, Qt::LeftButton, Qt::NoModifier, tool);
         QVERIFY(!overlay.outcome().accepted);
         QTest::keyClick(&overlay, Qt::Key_Escape);
@@ -1008,14 +1278,14 @@ private slots:
         QCOMPARE(labels.at(1), QStringLiteral("打开"));
         QCOMPARE(labels.at(2), QStringLiteral("标注"));
         QVERIFY(labels.at(3).contains(QStringLiteral("显示")));
-        QCOMPARE(labels.at(4), QStringLiteral("保存到桌面"));
-        QCOMPARE(labels.at(5), QStringLiteral("丢弃"));
+        QCOMPARE(labels.at(4), QStringLiteral("存到桌面"));
+        QCOMPARE(labels.at(5), QStringLiteral("删除图片"));
         QSignalSpy saved(&line, &Clothesline::saveDesktopRequested);
         menu->actions().at(4)->trigger(); QCOMPARE(saved.count(), 1);
         delete menu;
         line.setManagedDirectory(QString());
         menu = line.createContextMenu(path);
-        QCOMPARE(menu->actions().last()->text(), QStringLiteral("从衣架取下（保留文件）"));
+        QCOMPARE(menu->actions().last()->text(), QStringLiteral("移出暂存"));
         delete menu;
     }
     void clotheslineContextMenuClick_data() {
@@ -1024,6 +1294,7 @@ private slots:
             QTest::newRow(qPrintable(QString::number(row))) << row;
     }
     void clotheslineContextMenuClick() {
+        if (QGuiApplication::platformName() == "cocoa") QSKIP("原生菜单交互由 systemMenus 验证");
         QFETCH(int, row);
         QTemporaryDir temp;
         const QString path = temp.filePath("menu-sample.png");
@@ -1149,12 +1420,12 @@ private slots:
         };
         QStringList labels;
         for (auto* action : menu->actions()) if (!action->isSeparator()) labels << action->text();
-        QCOMPARE(labels, QStringList({"还原", "复制图像", "图像另存为…", "窗口阴影", "图像处理",
-            "粘贴", "替换为文件…", "移动到分组", "在文件夹中查看", "关闭", "销毁", "400 × 240"}));
-        QVERIFY(!find(menu.get(), "在文件夹中查看")->isEnabled());
+        QCOMPARE(labels, QStringList({"还原", "复制图片", "另存图片…", "窗口阴影", "调整图片",
+            "粘贴", "替换图片…", "移到分组", "显示文件", "隐藏贴图", "关闭贴图", "缩放大小"}));
+        QVERIFY(!find(menu.get(), "显示文件")->isEnabled());
         find(menu.get(), "粘贴")->trigger(); QCOMPARE(pasted.count(), 1);
         if (QGuiApplication::platformName() == "offscreen") {
-            find(menu.get(), "复制图像")->trigger();
+            find(menu.get(), "复制图片")->trigger();
             QCOMPARE(QApplication::clipboard()->image(), image);
             QTimer::singleShot(10, &pin, [&pin] {
                 for (auto* popup : pin.findChildren<QMenu*>()) if (popup->isVisible()) popup->close();
@@ -1162,24 +1433,24 @@ private slots:
             QTest::mouseClick(&pin, Qt::RightButton, Qt::NoModifier, QPoint(10, 10));
             QVERIFY(pin.isVisible()); QCOMPARE(destroyed.count(), 0);
         }
-        auto* processing = find(menu.get(), "图像处理")->menu();
-        find(processing, "向右旋转 90°")->trigger();
+        auto* processing = find(menu.get(), "调整图片")->menu();
+        find(processing, "向右旋转")->trigger();
         QCOMPARE(pin.displayedImage().size(), QSize(240, 400));
-        find(processing, "反色")->trigger(); QVERIFY(pin.inverted());
+        find(processing, "反转颜色")->trigger(); QVERIFY(pin.inverted());
         pin.toggleDetailAt(QPoint(50, 60)); QVERIFY(pin.detailMode_);
         find(menu.get(), "还原")->trigger();
         QVERIFY(!pin.detailMode_); QVERIFY(!pin.inverted()); QCOMPARE(pin.size(), QSize(400, 240));
-        find(find(menu.get(), "400 × 240")->menu(), "200%")->trigger();
+        find(find(menu.get(), "缩放大小")->menu(), "200%")->trigger();
         QCOMPARE(pin.size(), QSize(800, 480));
         pin.resetTo100(); pin.toggleThumbnail();
         QVERIFY(pin.width() < 400);
-        find(find(menu.get(), "400 × 240")->menu(), "100%")->trigger();
+        find(find(menu.get(), "缩放大小")->menu(), "100%")->trigger();
         QCOMPARE(pin.size(), QSize(400, 240));
         const QPoint beforeShadow = pin.pos();
         find(menu.get(), "窗口阴影")->trigger();
         QVERIFY(!pin.windowFlags().testFlag(Qt::NoDropShadowWindowHint));
         QCOMPARE(pin.pos(), beforeShadow); QVERIFY(pin.isVisible());
-        find(find(menu.get(), "移动到分组")->menu(), "分组 2")->trigger();
+        find(find(menu.get(), "移到分组")->menu(), "分组 2")->trigger();
         QCOMPARE(pin.group(), 1); QCOMPARE(grouped.count(), 1);
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
@@ -1191,20 +1462,20 @@ private slots:
         const QString exportPath = temporary.filePath("export.png");
         QVERIFY(pin.saveTo(exportPath)); QCOMPARE(QImage(exportPath), replacement);
         menu.reset(pin.createContextMenu());
-        QVERIFY(find(menu.get(), "在文件夹中查看")->isEnabled());
-        QVERIFY(find(menu.get(), "120 × 80"));
+        QVERIFY(find(menu.get(), "显示文件")->isEnabled());
+        QVERIFY(find(menu.get(), "缩放大小"));
         const QString folder = qEnvironmentVariable("JIE2_UI_ARTIFACTS");
         if (!folder.isEmpty()) {
             menu->ensurePolished(); menu->adjustSize();
             QVERIFY(menu->grab().save(folder + "/pin-context-menu.png"));
         }
-        find(menu.get(), "关闭")->trigger();
+        find(menu.get(), "隐藏贴图")->trigger();
         QVERIFY(!pin.isVisible()); QCOMPARE(destroyed.count(), 0);
         pin.show(); QVERIFY(pin.isVisible());
         pin.toggleDetailAt(QPoint(40, 30));
         menu.reset(pin.createContextMenu());
-        QVERIFY(find(menu.get(), "120 × 80"));
-        find(menu.get(), "销毁")->trigger(); QCOMPARE(destroyed.count(), 1);
+        QVERIFY(find(menu.get(), "缩放大小"));
+        find(menu.get(), "关闭贴图")->trigger(); QCOMPARE(destroyed.count(), 1);
     }
     void pinDetail_data() {
         QTest::addColumn<QPoint>("clicked");
@@ -1284,7 +1555,82 @@ private slots:
         QCOMPARE(line.itemCount(), 0);
         QVERIFY(QFileInfo::exists(path));
     }
+    void systemMenus() {
+#ifdef Q_OS_MACOS
+        if (QGuiApplication::platformName() != "cocoa") QSKIP("需要 macOS 桌面");
+        const QPoint point(300, 100);
+        QMenu menu;
+        auto* capture = menu.addAction(QStringLiteral("截图\t⌥⌘T"));
+        auto* toggle = menu.addAction(QStringLiteral("开关")); toggle->setCheckable(true);
+        auto* disabled = menu.addAction(QStringLiteral("不可用")); disabled->setEnabled(false);
+        auto* hidden = menu.addAction(QStringLiteral("不显示")); hidden->setVisible(false);
+        auto* submenu = menu.addMenu(QStringLiteral("子菜单"));
+        auto* child = submenu->addAction(QStringLiteral("子操作"));
+        QSignalSpy captured(capture, &QAction::triggered), toggled(toggle, &QAction::triggered);
+        QSignalSpy disabledCalls(disabled, &QAction::triggered), childCalls(child, &QAction::triggered);
+        QSignalSpy opened(&menu, &QMenu::aboutToShow), closed(&menu, &QMenu::aboutToHide);
+        auto select = [&](QMenu* source, const QStringList& path) {
+            return selectNativeMenuForTest(path, [&] { execContextMenu(source, point); });
+        };
+        QString error = select(&menu, {"截图"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(captured.count(), 1); QCOMPARE(opened.count(), 1); QCOMPARE(closed.count(), 1);
+        QVERIFY(!menu.isVisible());
+        error = select(&menu, {"开关"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(toggle->isChecked()); QCOMPARE(toggled.count(), 1);
+        error = select(&menu, {"不可用"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(disabledCalls.count(), 0);
+        error = select(&menu, {"子菜单", "子操作"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(childCalls.count(), 1);
+        error = select(&menu, {}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(captured.count(), 1); QCOMPARE(toggled.count(), 1);
+
+        QTemporaryDir temp;
+        TrayController controller(std::make_unique<MenuTestPlatform>());
+        controller.configPath_ = temp.filePath("config");
+        controller.clotheslineEnabled_ = false;
+        controller.clipboardWatchEnabled_ = false;
+        controller.systemCaptureWatchEnabled_ = false;
+        controller.triggerEnabled_ = false;
+        controller.setupTriggerCorner();
+        QVERIFY(controller.start());
+        error = selectNativeMenuForTest({"图片暂存"}, [&] {
+            controller.tray_->activated(QSystemTrayIcon::Trigger);
+            QCoreApplication::processEvents();
+        });
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QTRY_VERIFY(controller.clotheslineEnabled_);
+        error = select(controller.menu_, {"截图外观", "圆角"});
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        const bool round = controller.roundEnabled_;
+        QCoreApplication::processEvents();
+        QVERIFY(controller.roundEnabled_ != round);
+
+        const QString path = temp.filePath("picture.png");
+        QImage image(120, 80, QImage::Format_RGB32); image.fill(Qt::blue); QVERIFY(image.save(path));
+        Clothesline line; line.setManagedDirectory(temp.path());
+        QSignalSpy copied(&line, &Clothesline::copyRequested);
+        std::unique_ptr<QMenu> pictureMenu(line.createContextMenu(path));
+        error = select(pictureMenu.get(), {"复制"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(copied.count(), 1);
+        QSignalSpy discarded(&line, &Clothesline::discardRequested);
+        error = select(pictureMenu.get(), {"删除图片"}); QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(discarded.count(), 1); QVERIFY(QFileInfo::exists(path));
+
+        PinWindow pin(image); pin.show();
+        error = selectNativeMenuForTest({"调整图片", "向右旋转"}, [&] {
+            QTest::mouseClick(&pin, Qt::RightButton, Qt::NoModifier, QPoint(10, 10));
+        });
+        QVERIFY2(error.isEmpty(), qPrintable(error)); QCOMPARE(pin.displayedImage().size(), QSize(80, 120));
+        SelectionOverlay overlay(QPixmap::fromImage(image), 1, nullptr);
+        error = selectNativeMenuForTest({"椭圆"}, [&] { overlay.showToolMenu(0, point); });
+        QVERIFY2(error.isEmpty(), qPrintable(error)); QCOMPARE(static_cast<int>(overlay.currentTool_), static_cast<int>(core::AnnotationTool::Ellipse));
+#else
+        QSKIP("需要 macOS 桌面");
+#endif
+    }
+
     void trayMenuClicks() {
+        if (QGuiApplication::platformName() == "cocoa") QSKIP("原生菜单交互由 systemMenus 验证");
         QTemporaryDir temp;
         auto platform = std::make_unique<MenuTestPlatform>();
         auto* backend = platform.get();
@@ -1308,6 +1654,20 @@ private slots:
             for (auto* a : menu->actions()) if (a->text().startsWith(text)) return a;
             return nullptr;
         };
+        for (auto* action : controller.menu_->actions()) {
+            if (action->isSeparator()) continue;
+            const auto name = action->text().section('\t', 0, 0).remove(QChar(0x2026));
+            QVERIFY2(name.size() >= 2 && name.size() <= 4, qPrintable(name));
+            QVERIFY2(action->toolTip().size() <= 20, qPrintable(action->toolTip()));
+        }
+        // 菜单显示用户实际按下的符号，不暴露配置中的 grave 键名。
+        const auto snipKey = controller.snipHotkeySpec_;
+        controller.snipHotkeySpec_.key = platform::Key::Grave;
+        controller.snipHotkeySpec_.modifiers = 0;
+        controller.rebuildMenu();
+        QCOMPARE(find(controller.menu_, "截图")->text(), QStringLiteral("截图\t`"));
+        controller.snipHotkeySpec_ = snipKey;
+        controller.rebuildMenu();
         auto open = [&] {
 #ifdef Q_OS_MACOS
             controller.tray_->activated(QSystemTrayIcon::Trigger);
@@ -1325,24 +1685,24 @@ private slots:
             QTRY_VERIFY(!controller.menu_->isVisible());
             QCoreApplication::processEvents();
         };
-        click("衣架（");
+        click("图片暂存");
         QTRY_VERIFY(controller.clotheslineEnabled_);
         QVERIFY(controller.clothesline_->watchEnabled_);
         controller.rebuildMenu();
-        QVERIFY(find(controller.menu_, "衣架（")->isChecked());
-        click("衣架（");
+        QVERIFY(find(controller.menu_, "图片暂存")->isChecked());
+        click("图片暂存");
         QTRY_VERIFY(!controller.clotheslineEnabled_);
         controller.rebuildMenu();
-        QVERIFY(!find(controller.menu_, "衣架（")->isChecked());
-        click("复制图像时"); QTRY_VERIFY(controller.clipboardWatchEnabled_);
-        click("复制图像时"); QTRY_VERIFY(!controller.clipboardWatchEnabled_);
-        click("触发角（"); QTRY_VERIFY(controller.triggerEnabled_);
+        QVERIFY(!find(controller.menu_, "图片暂存")->isChecked());
+        click("自动收集"); QTRY_VERIFY(controller.clipboardWatchEnabled_);
+        click("自动收集"); QTRY_VERIFY(!controller.clipboardWatchEnabled_);
+        click("角落截图"); QTRY_VERIFY(controller.triggerEnabled_);
         QVERIFY(controller.cornerTimer_->isActive());
-        click("触发角（"); QTRY_VERIFY(!controller.triggerEnabled_);
+        click("角落截图"); QTRY_VERIFY(!controller.triggerEnabled_);
         QVERIFY(!controller.cornerTimer_->isActive());
-        for (const QString label : {QString("圆角（"), QString("边框（"), QString("阴影")}) {
+        for (const QString label : {QString("圆角"), QString("边框"), QString("阴影")}) {
             open(); QTRY_VERIFY(controller.menu_->isVisible());
-            auto* sub = find(controller.menu_, "输出装饰")->menu();
+            auto* sub = find(controller.menu_, "截图外观")->menu();
             sub->popup(controller.menu_->mapToGlobal(QPoint(controller.menu_->width(), 40)));
             QTRY_VERIFY(sub->isVisible());
             auto* action = find(sub, label); QVERIFY(action);
@@ -1354,18 +1714,18 @@ private slots:
             controller.menu_->hide();
         }
         clipboard->setText("菜单测试贴图");
-        click("贴图（"); QTRY_COMPARE(controller.pinCount(), 1);
+        click("贴到屏幕"); QTRY_COMPARE(controller.pinCount(), 1);
         QVERIFY(controller.pins_.front()->isVisible());
         controller.closeAllPins(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QImage image(160, 80, QImage::Format_RGB32); image.fill(Qt::white);
         clipboard->setImage(image);
-        click("贴图（"); QTRY_COMPARE(controller.pinCount(), 1);
+        click("贴到屏幕"); QTRY_COMPARE(controller.pinCount(), 1);
         controller.closeAllPins(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         controller.ocrConfig_.backend = core::OcrBackendKind::System;
-        click("文字识别（"); QTRY_COMPARE(backend->recognitions, 1);
+        click("提取文字"); QTRY_COMPARE(backend->recognitions, 1);
         QCOMPARE(clipboard->text(), QString("菜单识别验证"));
         clipboard->clear();
-        for (const QString label : {QString("贴图（"), QString("文字识别（"), QString("识别二维码")}) {
+        for (const QString label : {QString("贴到屏幕"), QString("提取文字"), QString("扫码")}) {
             click(label);
             QTRY_VERIFY(qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
             auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
@@ -1393,17 +1753,17 @@ private slots:
             // macOS 的嵌套窗口需要应用主循环；离屏运行保持 QtTest 自身循环，
             // 避免退出应用主循环后影响同进程中的其他测试。
             QTimer::singleShot(0, &controller, [&] {
-                click("截图（");
-                click("退出J2");
+                click("截图");
+                click("退出应用");
             });
             QCOMPARE(QCoreApplication::exec(), 0);
         } else {
-            click("截图（");
+            click("截图");
         }
         QTRY_COMPARE(backend->captures, 1);
         QCOMPARE(overlays, 1);
         dismiss.stop();
-        click("平台能力");
+        click("功能检查");
         QTRY_VERIFY(qobject_cast<QMessageBox*>(QApplication::activeModalWidget()));
         auto* capabilityBox = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         QVERIFY(capabilityBox->text().contains("menu-test"));

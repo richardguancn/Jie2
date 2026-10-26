@@ -657,7 +657,7 @@ int main(int argc, char** argv) {
             whiteboard = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 const QString candidate = QString::fromUtf8(argv[++i]);
-                if (QColor::isValidColorName(candidate)) {
+                if (QColor(candidate).isValid()) {
                     whiteboardColor = candidate;
                 } else {
                     std::fprintf(stderr, "invalid --whiteboard color: %s\n",

@@ -22,11 +22,18 @@ class QFrame;
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
+class QTimer;
 
 namespace jie2::ui {
 
 /// 重新抓屏回调（F5 用）。返回空 QPixmap 表示失败。
 using OverlayRecaptureFn = std::function<QPixmap()>;
+
+struct SelectionSnapTargets {
+    std::vector<core::Rect> windows;  // 按前后顺序排列，本屏逻辑坐标
+    std::function<std::vector<core::Rect>(core::Point)> elementsAt;
+    bool accessibilityRequired = false;
+};
 
 /// 遮罩构造参数集（会随专业版对齐项继续增长，独立成结构体避免参数列表失控）。
 /// 定义在类外：作为默认实参使用时不受"类内默认成员初始化器"限制。
@@ -34,6 +41,7 @@ struct SelectionOverlayOptions {
     QStringList historyPaths;   // 截图历史（旧的在前），, / . 回放
     OverlayRecaptureFn recapture;  // 空则 F5 无效
     std::vector<core::Rect> snapCandidates;  // 可吸附窗口（本屏逻辑坐标）
+    std::function<SelectionSnapTargets()> snapTargets; // 初次截图及 F5 时刷新
     int paletteSize = 6;        // 调色板可用颜色数量（v2.4 对齐项）
     core::ShortcutMap shortcuts = core::ShortcutMap::defaults();  // v2.11.3
     bool selectImage = false;  // 衣架标注：居中显示并选中整张图片
@@ -105,10 +113,12 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void showEvent(QShowEvent* event) override;
     /// 交给平台层把遮罩提到可覆盖全屏/远程桌面窗口的层级并抢焦点。
     void promoteToFront();
@@ -153,6 +163,11 @@ private:
     void ensureOcrPanel();
     void positionOcrPanel();
     void invalidateOcr();
+    void refreshSnapTargets();
+    void updateHoverTarget(const QPoint& point, bool bypass = false);
+    void clearHoverTarget();
+    void queryHoverElements();
+    void updateDragSelection(const QPoint& point, Qt::KeyboardModifiers modifiers);
     QColor pixelColorAt(const QPoint& logicalPos) const;
 
     // ---- 标注（M2）----
@@ -249,6 +264,21 @@ private:
     QRect selectionRect_;   // 结算后的选区（非拖拽状态使用）
     bool snapActive_ = false;
     core::SnapResult lastSnap_;
+    std::function<SelectionSnapTargets()> snapTargets_;
+    std::function<std::vector<core::Rect>(core::Point)> elementsAt_;
+    QTimer* hoverTimer_ = nullptr;
+    std::vector<QRect> hoverCandidates_;
+    int hoverIndex_ = 0;
+    QPoint hoverPoint_;
+    QRect hoverWindow_;
+    QRect hoverRect_;
+    QRect pressedTarget_;
+    quint64 hoverGeneration_ = 0;
+    bool elementQueryRunning_ = false;
+    bool hoverChoiceChanged_ = false;
+    bool snapBypass_ = false;
+    bool screenSnapshot_ = true;
+    bool accessibilityRequired_ = false;
 
     // ---- 标注（M2）----
     core::AnnotationDocument annotations_;

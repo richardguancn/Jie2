@@ -13,6 +13,8 @@ target_include_directories(jie2_platform PUBLIC
 )
 
 target_link_libraries(jie2_platform PUBLIC jie2_core)
+find_package(Threads REQUIRED)
+target_link_libraries(jie2_platform PRIVATE Threads::Threads)
 
 if(MSVC)
     target_compile_options(jie2_platform PRIVATE /W4)

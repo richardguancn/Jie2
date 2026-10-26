@@ -1,3 +1,5 @@
+#include "ui/qt_compat.h"
+#include "ui/system_menu.h"
 #include "ui/pin_window.h"
 
 #include <algorithm>
@@ -50,7 +52,7 @@ bool parseColorText(const QString& text, QColor* out) {
     // "255, 0, 0" / "255 0 0" / "1.0, 0.5, 0"
     static const QRegularExpression separator(QStringLiteral("[,\\s]+"));
     const QStringList parts =
-        trimmed.split(separator, Qt::SkipEmptyParts);
+        trimmed.split(separator, kSkipEmptyParts);
     if (parts.size() != 3) {
         return false;
     }
@@ -135,7 +137,7 @@ QImage imageFromText(const QString& text) {
 PinWindow::PinWindow(QImage image, QWidget* parent) : QWidget(parent) {
     source_ = std::move(image);
 
-    setWindowTitle(QStringLiteral("J2 贴图"));
+    setWindowTitle(QStringLiteral("屏幕贴图"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::Tool |
                    Qt::NoDropShadowWindowHint);
@@ -172,11 +174,11 @@ PinWindow* PinWindow::fromClipboard(QString* error) {
 
     const QClipboard* clipboard = QApplication::clipboard();
     if (clipboard == nullptr) {
-        return setError(QStringLiteral("剪贴板不可用"));
+        return setError(QStringLiteral("暂时无法读取已复制的内容"));
     }
     const QMimeData* mime = clipboard->mimeData();
     if (mime == nullptr) {
-        return setError(QStringLiteral("剪贴板为空"));
+        return setError(QStringLiteral("请先复制图片、文字或颜色"));
     }
 
     // 1) 图像优先（最常见来源）。
@@ -207,7 +209,7 @@ PinWindow* PinWindow::fromClipboard(QString* error) {
     if (mime->hasText()) {
         const QString text = clipboard->text();
         if (text.trimmed().isEmpty()) {
-            return setError(QStringLiteral("剪贴板内容为空"));
+            return setError(QStringLiteral("请先复制图片、文字或颜色"));
         }
         QColor color;
         if (parseColorText(text, &color)) {
@@ -216,7 +218,7 @@ PinWindow* PinWindow::fromClipboard(QString* error) {
         return new PinWindow(imageFromText(text));
     }
 
-    return setError(QStringLiteral("剪贴板中没有可贴出的内容（需要图像、文本或颜色值）"));
+    return setError(QStringLiteral("请先复制图片、文字或颜色"));
 }
 
 QImage PinWindow::transformed() const {
@@ -461,14 +463,14 @@ QMenu* PinWindow::createContextMenu() {
     auto* menu = new QMenu(this);
     menu->addAction(QStringLiteral("还原"), this, &PinWindow::restoreOriginal);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("复制图像"), this, &PinWindow::copyToClipboard);
-    menu->addAction(QStringLiteral("图像另存为…"), this, [this] {
-        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("图像另存为"),
+    menu->addAction(QStringLiteral("复制图片"), this, &PinWindow::copyToClipboard);
+    menu->addAction(QStringLiteral("另存图片…"), this, [this] {
+        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("另存图片"),
             QStringLiteral("贴图.png"), QStringLiteral("PNG 图像 (*.png);;JPEG 图像 (*.jpg *.jpeg)"));
         if (path.isEmpty()) return;
         if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".png");
         if (saveTo(path)) filePath_ = QFileInfo(path).absoluteFilePath();
-        else QMessageBox::warning(this, QStringLiteral("保存失败"), QStringLiteral("图片未能保存，请检查保存位置是否可写。"));
+        else QMessageBox::warning(this, QStringLiteral("保存失败"), QStringLiteral("无法保存图片，请检查文件夹权限。"));
     });
     menu->addSeparator();
     auto* shadow = menu->addAction(QStringLiteral("窗口阴影"));
@@ -482,23 +484,26 @@ QMenu* PinWindow::createContextMenu() {
         if (visible) show();
     });
     menu->addSeparator();
-    auto* processing = menu->addMenu(QStringLiteral("图像处理"));
-    processing->addAction(QStringLiteral("向左旋转 90°"), this, &PinWindow::rotateCounterClockwise);
-    processing->addAction(QStringLiteral("向右旋转 90°"), this, &PinWindow::rotateClockwise);
-    processing->addAction(QStringLiteral("水平翻转"), this, &PinWindow::flipHorizontal);
-    processing->addAction(QStringLiteral("垂直翻转"), this, &PinWindow::flipVertical);
-    auto* invert = processing->addAction(QStringLiteral("反色"), this, &PinWindow::toggleInvert);
+    auto* processing = menu->addMenu(QStringLiteral("调整图片"));
+    processing->setToolTipsVisible(true);
+    processing->addAction(QStringLiteral("向左旋转"), this, &PinWindow::rotateCounterClockwise)
+        ->setToolTip(QStringLiteral("向左旋转 90°"));
+    processing->addAction(QStringLiteral("向右旋转"), this, &PinWindow::rotateClockwise)
+        ->setToolTip(QStringLiteral("向右旋转 90°"));
+    processing->addAction(QStringLiteral("左右翻转"), this, &PinWindow::flipHorizontal);
+    processing->addAction(QStringLiteral("上下翻转"), this, &PinWindow::flipVertical);
+    auto* invert = processing->addAction(QStringLiteral("反转颜色"), this, &PinWindow::toggleInvert);
     invert->setCheckable(true);
     invert->setChecked(inverted_);
     menu->addSeparator();
     menu->addAction(QStringLiteral("粘贴"), this, &PinWindow::pasteRequested);
-    menu->addAction(QStringLiteral("替换为文件…"), this, [this] {
-        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("替换为文件"), {},
+    menu->addAction(QStringLiteral("替换图片…"), this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("替换图片"), {},
             QStringLiteral("图像 (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff);;所有文件 (*)"));
         if (!path.isEmpty() && !replaceFromFile(path))
-            QMessageBox::warning(this, QStringLiteral("无法替换"), QStringLiteral("无法读取这张图片，原贴图已保留。"));
+            QMessageBox::warning(this, QStringLiteral("无法替换"), QStringLiteral("图片无法打开，原贴图已保留。"));
     });
-    auto* groups = menu->addMenu(QStringLiteral("移动到分组"));
+    auto* groups = menu->addMenu(QStringLiteral("移到分组"));
     for (int i = 0; i < groupCount_; ++i) {
         auto* action = groups->addAction(QStringLiteral("分组 %1").arg(i + 1));
         action->setCheckable(true);
@@ -507,7 +512,7 @@ QMenu* PinWindow::createContextMenu() {
             if (group_ != i) { group_ = i; emit groupChanged(); }
         });
     }
-    auto* reveal = menu->addAction(QStringLiteral("在文件夹中查看"), this, [this] {
+    auto* reveal = menu->addAction(QStringLiteral("显示文件"), this, [this] {
 #ifdef Q_OS_MACOS
         QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), filePath_});
 #else
@@ -516,11 +521,15 @@ QMenu* PinWindow::createContextMenu() {
     });
     reveal->setEnabled(!filePath_.isEmpty() && QFileInfo::exists(filePath_));
     menu->addSeparator();
-    menu->addAction(QStringLiteral("关闭"), this, &QWidget::hide);
-    menu->addAction(QStringLiteral("销毁"), this, &QWidget::close);
+    menu->addAction(QStringLiteral("隐藏贴图"), this, &QWidget::hide)
+        ->setToolTip(QStringLiteral("暂时隐藏，可从菜单中重新显示"));
+    menu->addAction(QStringLiteral("关闭贴图"), this, &QWidget::close)
+        ->setToolTip(QStringLiteral("移除这张屏幕贴图"));
+    menu->setToolTipsVisible(true);
     menu->addSeparator();
     const QSize size = transformed().size();
-    auto* dimensions = menu->addMenu(QStringLiteral("%1 × %2").arg(size.width()).arg(size.height()));
+    auto* dimensions = menu->addMenu(QStringLiteral("缩放大小"));
+    dimensions->menuAction()->setToolTip(QStringLiteral("原图尺寸 %1 × %2").arg(size.width()).arg(size.height()));
     for (int percent : {25, 50, 75, 100, 150, 200, 400}) {
         auto* action = dimensions->addAction(QStringLiteral("%1%").arg(percent));
         action->setCheckable(true);
@@ -591,8 +600,8 @@ void PinWindow::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::RightButton) {
         dragging_ = false;
         auto* menu = createContextMenu();
-        const QPoint point = event->globalPosition().toPoint();
-        menu->exec(point);
+        const QPoint point = mouseGlobalPosition(event);
+        execContextMenu(menu, point);
         menu->deleteLater();
         return;
     }
@@ -601,7 +610,7 @@ void PinWindow::mousePressEvent(QMouseEvent* event) {
 
 void PinWindow::mouseMoveEvent(QMouseEvent* event) {
     if (dragging_) {
-        const QPoint newPos = event->globalPosition().toPoint() - dragOffset_;
+        const QPoint newPos = mouseGlobalPosition(event) - dragOffset_;
         const QPoint delta = newPos - pos();
         move(newPos);
         // 报告位移：托盘控制器让其余**选中**贴图一起动

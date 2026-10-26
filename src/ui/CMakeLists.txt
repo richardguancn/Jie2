@@ -16,6 +16,7 @@ add_executable(jie2 WIN32 MACOSX_BUNDLE
     selection_overlay.cpp
     settings_dialog.cpp
     single_instance.cpp
+    system_menu.cpp
     theme.cpp
     tray.cpp
 )
@@ -41,6 +42,7 @@ if(APPLE)
     target_sources(jie2 PRIVATE "${JIE2_APP_ICON}")
     set_source_files_properties("${JIE2_APP_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(jie2 PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/macos/Info.plist.in"
         MACOSX_BUNDLE_ICON_FILE "AppIcon.icns"
         MACOSX_BUNDLE_BUNDLE_NAME "J2"
         MACOSX_BUNDLE_GUI_IDENTIFIER "app.jie2.desktop"

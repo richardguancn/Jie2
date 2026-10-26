@@ -21,7 +21,12 @@ struct Rgba {
     std::uint8_t g = 0;
     std::uint8_t b = 0;
     std::uint8_t a = 255;
-    friend constexpr bool operator==(const Rgba&, const Rgba&) = default;
+    friend constexpr bool operator==(const Rgba& a, const Rgba& b) {
+        return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+    }
+    friend constexpr bool operator!=(const Rgba& a, const Rgba& b) {
+        return !(a == b);
+    }
 };
 
 /// 行优先、四通道、无行填充的像素缓冲。

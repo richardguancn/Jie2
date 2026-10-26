@@ -21,7 +21,7 @@ target_include_directories(jie2_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_compile_features(jie2_core PUBLIC cxx_std_20)
+target_compile_features(jie2_core PUBLIC cxx_std_17)
 
 if(MSVC)
     target_compile_options(jie2_core PRIVATE /W4)

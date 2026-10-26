@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QStandardPaths>
 
 namespace jie2::ui {
@@ -70,6 +71,23 @@ bool migrateLegacyAppData(const QString& legacyDirectory) {
         }
     }
     return migrated;
+}
+
+bool moveFileToTrash(const QString& path) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    return QFile::moveToTrash(path);
+#elif defined(Q_OS_LINUX)
+    // Qt 5.12 没有回收站 API，使用桌面提供的 GIO；不使用 shell 解释路径。
+    const QString executable = QStandardPaths::findExecutable(QStringLiteral("gio"));
+    if (executable.isEmpty()) return false;
+    QProcess process;
+    process.start(executable, {QStringLiteral("trash"), QStringLiteral("--"),
+                              QFileInfo(path).absoluteFilePath()});
+    return process.waitForFinished(10000) &&
+           process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+#else
+    return false;
+#endif
 }
 
 } // namespace jie2::ui

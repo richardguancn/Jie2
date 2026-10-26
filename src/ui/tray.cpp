@@ -1,5 +1,7 @@
+#include "ui/system_menu.h"
 #include <QScopeGuard>
 #include "ui/tray.h"
+#include "ui/qt_compat.h"
 
 #include "ui/app_paths.h"
 #include "ui/theme.h"
@@ -39,6 +41,7 @@
 #include <QMetaObject>
 #include <QPainter>
 #include <QPixmap>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
@@ -69,17 +72,65 @@ constexpr const char* kSaveClipboardHotkeyId = "save-clipboard-image";
 // （浏览器搜索、IDE 查找），改用 Ctrl+Alt+P：P = Pin。
 constexpr const char* kPinHotkeyId = "pin-clipboard";
 
-/// 菜单栏只保留白色标志；其他平台使用完整的草绿应用图标。
+/// macOS 使用单色模板，由系统按菜单栏背景调整颜色；其他平台使用完整应用图标。
 QIcon makeTrayIcon() {
 #ifdef Q_OS_MACOS
     QIcon icon;
-    icon.addFile(QStringLiteral(":/brand/menubar/white-22.png"), QSize(22, 22));
-    icon.addFile(QStringLiteral(":/brand/menubar/white-44.png"), QSize(44, 44));
-    icon.addFile(QStringLiteral(":/brand/menubar/white-66.png"), QSize(66, 66));
+    icon.addFile(QStringLiteral(":/brand/menubar/black-22.png"), QSize(22, 22));
+    icon.addFile(QStringLiteral(":/brand/menubar/black-44.png"), QSize(44, 44));
+    icon.addFile(QStringLiteral(":/brand/menubar/black-66.png"), QSize(66, 66));
+    icon.setIsMask(true);
     return icon;
 #else
     return QIcon(QStringLiteral(":/brand/app/icon-256.png"));
 #endif
+}
+
+// 菜单只展示按键本身；配置中使用的键名仍保持原样。
+QString menuShortcutLabel(const platform::HotkeySpec& spec) {
+    using platform::Key;
+    QString key;
+    switch (spec.key) {
+    case Key::Grave: key = QStringLiteral("`"); break;
+    case Key::Minus: key = QStringLiteral("-"); break;
+    case Key::Equal: key = QStringLiteral("="); break;
+    case Key::BracketLeft: key = QStringLiteral("["); break;
+    case Key::BracketRight: key = QStringLiteral("]"); break;
+    case Key::Backslash: key = QStringLiteral("\\"); break;
+    case Key::Semicolon: key = QStringLiteral(";"); break;
+    case Key::Apostrophe: key = QStringLiteral("'"); break;
+    case Key::Comma: key = QStringLiteral(","); break;
+    case Key::Period: key = QStringLiteral("."); break;
+    case Key::Slash: key = QStringLiteral("/"); break;
+    case Key::Left: key = QStringLiteral("←"); break;
+    case Key::Right: key = QStringLiteral("→"); break;
+    case Key::Up: key = QStringLiteral("↑"); break;
+    case Key::Down: key = QStringLiteral("↓"); break;
+    case Key::Space: key = QStringLiteral("空格"); break;
+    default: {
+        auto plain = spec;
+        plain.modifiers = 0;
+        key = QString::fromStdString(platform::displayHotkey(plain));
+        break;
+    }
+    }
+    QString modifiers;
+#ifdef Q_OS_MACOS
+    if (spec.modifiers & platform::kModCtrl) modifiers += QStringLiteral("⌃");
+    if (spec.modifiers & platform::kModAlt) modifiers += QStringLiteral("⌥");
+    if (spec.modifiers & platform::kModShift) modifiers += QStringLiteral("⇧");
+    if (spec.modifiers & platform::kModSuper) modifiers += QStringLiteral("⌘");
+#else
+    if (spec.modifiers & platform::kModCtrl) modifiers += QStringLiteral("Ctrl+");
+    if (spec.modifiers & platform::kModAlt) modifiers += QStringLiteral("Alt+");
+    if (spec.modifiers & platform::kModShift) modifiers += QStringLiteral("Shift+");
+#ifdef Q_OS_WIN
+    if (spec.modifiers & platform::kModSuper) modifiers += QStringLiteral("Win+");
+#else
+    if (spec.modifiers & platform::kModSuper) modifiers += QStringLiteral("Super+");
+#endif
+#endif
+    return modifiers + key;
 }
 
 QString configFilePath() {
@@ -260,10 +311,10 @@ bool TrayController::start() {
         connect(clothesline_, &Clothesline::revealRequested, this, [this](const QString& path) {
 #ifdef Q_OS_MACOS
             if (!QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), path}))
-                note(QStringLiteral("打开访达失败"), path, true);
+                note(QStringLiteral("打开失败"), path, true);
 #else
             if (!QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath())))
-                note(QStringLiteral("打开文件夹失败"), path, true);
+                note(QStringLiteral("打开失败"), path, true);
 #endif
         });
         connect(clothesline_, &Clothesline::saveDesktopRequested, this, [this](const QString& path) {
@@ -274,17 +325,17 @@ bool TrayController::start() {
             for (int i = 1; QFileInfo::exists(target); ++i)
                 target = QDir(desktop).filePath(QStringLiteral("%1 (%2).%3").arg(source.completeBaseName()).arg(i).arg(source.suffix()));
             if (!QFile::copy(path, target)) {
-                note(QStringLiteral("保存到桌面失败"), target, true);
+                note(QStringLiteral("保存失败"), target, true);
                 return;
             }
             clothesline_->takeDownPath(path);
-            note(QStringLiteral("已保存到桌面"), target);
+            note(QStringLiteral("保存完成"), target);
         });
         connect(clothesline_, &Clothesline::discardRequested, this, [this](const QString& path) {
             const bool owned = QFileInfo(path).canonicalPath() == QFileInfo(captureDirectory()).canonicalFilePath();
             // 自有截图进入废纸篓；外部图片只从衣架取下。
-            if (owned && QFileInfo::exists(path) && !QFile::moveToTrash(path)) {
-                note(QStringLiteral("无法移到废纸篓"), path, true);
+            if (owned && QFileInfo::exists(path) && !moveFileToTrash(path)) {
+                note(QStringLiteral("删除失败"), path, true);
                 return;
             }
             clothesline_->takeDownPath(path);
@@ -342,22 +393,20 @@ bool TrayController::start() {
     setupSystemCaptureWatcher();
 
     tray_ = new QSystemTrayIcon(makeTrayIcon(), this);
-    tray_->setToolTip(QStringLiteral("J2 — %1")
-                          .arg(QString::fromStdString(platform_->name())));
+    tray_->setToolTip(QStringLiteral("J2 — 截图与贴图"));
 
     menu_ = new QMenu();
     rebuildMenu();
 #ifdef Q_OS_MACOS
-    // 使用 Qt 弹出菜单管理完整的点击分发。不要同时设置原生 contextMenu，
-    // 否则系统会先接管点击，Qt 菜单中的动作可能无法收到事件。
+    // 系统负责菜单绘制与跟踪，关闭后再执行动作；不同时绑定第二套入口。
     connect(tray_, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
                 if (reason == QSystemTrayIcon::Trigger ||
                     reason == QSystemTrayIcon::Context) {
                     QTimer::singleShot(0, this, [this] {
-                        if (!menu_->isVisible()) {
+                        if (!menu_->isVisible() && !systemMenuIsOpen()) {
                             const QRect anchor = tray_->geometry();
-                            menu_->popup(anchor.isValid() ? anchor.bottomLeft() : QCursor::pos());
+                            popupContextMenu(menu_, anchor.isValid() ? anchor.bottomLeft() : QCursor::pos());
                         }
                     });
                 }
@@ -397,7 +446,7 @@ bool TrayController::start() {
     // 平台能力受限时第一时间如实提示（评估报告 3.2 要求降级对用户可见）。
     if (capabilities_.hasLimitations() && tray_->isSystemTrayAvailable()) {
         tray_->showMessage(
-            QStringLiteral("J2：当前会话能力受限"),
+            QStringLiteral("功能受限"),
             QString::fromStdString(capabilities_.describe()),
             QSystemTrayIcon::Warning, 8000);
     }
@@ -411,43 +460,57 @@ void TrayController::rebuildMenu() {
         return;
     }
     menu_->clear();
+    menu_->setToolTipsVisible(true);
 
-    auto* captureAction = menu_->addAction(QStringLiteral("截图（选择区域）"));
+    auto* captureAction = menu_->addAction(hotkeyRegistered_
+        ? QStringLiteral("截图\t%1").arg(menuShortcutLabel(snipHotkeySpec_))
+        : QStringLiteral("截图"));
+    captureAction->setToolTip(hotkeyRegistered_ ? QStringLiteral("拖动鼠标，选择要截取的区域")
+        : QStringLiteral("可点击截图；快捷键不可用：%1").arg(hotkeyError_));
     connect(captureAction, &QAction::triggered, this,
             &TrayController::triggerCapture, Qt::QueuedConnection);
 
     // 贴图（M4）：把剪贴板内容贴成置顶窗口。
-    auto* pinAction = menu_->addAction(QStringLiteral("贴图（从剪贴板）"));
+    auto* pinAction = menu_->addAction(pinHotkeyRegistered_
+        ? QStringLiteral("贴到屏幕\t%1").arg(menuShortcutLabel(pinHotkeySpec_))
+        : QStringLiteral("贴到屏幕"));
+    pinAction->setToolTip(pinHotkeyRegistered_ ? QStringLiteral("把已复制的图片、文字或颜色贴在屏幕上")
+        : QStringLiteral("可点击贴图；快捷键不可用：%1").arg(pinHotkeyError_));
     connect(pinAction, &QAction::triggered, this, &TrayController::triggerPin, Qt::QueuedConnection);
 
     // 文字识别（M5）：对剪贴板图像跑 OCR。
     auto* ocrAction = menu_->addAction(
-        QStringLiteral("文字识别（大模型）"));
+        QStringLiteral("提取文字"));
+    ocrAction->setToolTip(QStringLiteral("提取已复制图片中的文字"));
     connect(ocrAction, &QAction::triggered, this, &TrayController::triggerOcr, Qt::QueuedConnection);
 
-    auto* translateAction = menu_->addAction(QStringLiteral("翻译（剪贴板文字或图片）"));
+    auto* translateAction = menu_->addAction(QStringLiteral("翻译内容"));
+    translateAction->setToolTip(QStringLiteral("翻译已复制的文字或图片"));
     connect(translateAction, &QAction::triggered, this, &TrayController::triggerTranslation, Qt::QueuedConnection);
 
     // 二维码/条形码识别（M6，专业版对齐项 barcode-scan）。
     auto* barcodeAction =
-        menu_->addAction(QStringLiteral("识别二维码/条形码"));
+        menu_->addAction(QStringLiteral("扫码"));
+    barcodeAction->setToolTip(QStringLiteral("读取已复制图片中的二维码或条形码"));
     connect(barcodeAction, &QAction::triggered, this,
             &TrayController::triggerBarcodeScan, Qt::QueuedConnection);
 
     if (!pins_.empty()) {
+        menu_->addSeparator();
         auto* hidePins = menu_->addAction(
-            pinsHidden_ ? QStringLiteral("显示全部贴图（%1）").arg(pins_.size())
-                        : QStringLiteral("隐藏全部贴图（%1）").arg(pins_.size()));
+            pinsHidden_ ? QStringLiteral("全部显示") : QStringLiteral("全部隐藏"));
+        hidePins->setToolTip(QStringLiteral("共 %1 张屏幕贴图").arg(pins_.size()));
         connect(hidePins, &QAction::triggered, this,
                 &TrayController::toggleHidePins, Qt::QueuedConnection);
         auto* savePins = menu_->addAction(
-            QStringLiteral("保存全部贴图（%1）").arg(pins_.size()));
+            QStringLiteral("全部保存"));
+        savePins->setToolTip(QStringLiteral("保存全部 %1 张屏幕贴图").arg(pins_.size()));
         connect(savePins, &QAction::triggered, this,
                 &TrayController::saveAllPins, Qt::QueuedConnection);
 
         // 贴图分组（专业版对齐项）：只显示当前组的贴图。
         auto* groupMenu = menu_->addMenu(
-            QStringLiteral("贴图分组（当前第 %1 组）").arg(currentPinGroup_ + 1));
+            QStringLiteral("贴图分组"));
         for (int g = 0; g < std::max(1, pinGroupCount_); ++g) {
             QAction* item = groupMenu->addAction(
                 QStringLiteral("第 %1 组").arg(g + 1));
@@ -456,40 +519,28 @@ void TrayController::rebuildMenu() {
             connect(item, &QAction::triggered, this,
                     [this, g]() { switchPinGroup(g); }, Qt::QueuedConnection);
         }
-        QAction* nextGroup = groupMenu->addAction(QStringLiteral("下一组"));
+        QAction* nextGroup = groupMenu->addAction(QStringLiteral("下组贴图"));
         connect(nextGroup, &QAction::triggered, this,
                 [this]() { switchPinGroup(-1); }, Qt::QueuedConnection);
 
-        auto* closePins = menu_->addAction(QStringLiteral("关闭全部贴图"));
+        auto* closePins = menu_->addAction(QStringLiteral("全部关闭"));
         connect(closePins, &QAction::triggered, this,
                 &TrayController::closeAllPins, Qt::QueuedConnection);
     }
 
-    // 热键状态行：显示**实际生效**的组合（可自定义，故不能写死文本）。
-    const QString snipLabel =
-        QString::fromStdString(platform::displayHotkey(snipHotkeySpec_));
-    const QString pinLabel =
-        QString::fromStdString(platform::displayHotkey(pinHotkeySpec_));
-    auto* hotkeyStatus = menu_->addAction(
-        hotkeyRegistered_
-            ? QStringLiteral("截图热键：%1%2")
-                  .arg(snipLabel,
-                       pinHotkeyRegistered_
-                           ? QStringLiteral(" · 贴图热键：%1").arg(pinLabel)
-                           : QStringLiteral(" · 贴图热键不可用"))
-            : QStringLiteral("全局热键不可用（%1）：%2").arg(snipLabel, hotkeyError_));
-    hotkeyStatus->setEnabled(false);
-
     if (captureCount_ > 0) {
-        auto* lastCapture = menu_->addAction(
-            QStringLiteral("最近截图：%1").arg(QFileInfo(lastCapturePath_).fileName()));
+        auto* recent = menu_->addMenu(QStringLiteral("最近截图"));
+        auto* lastCapture = recent->addAction(recent->fontMetrics().elidedText(
+            QFileInfo(lastCapturePath_).fileName(), Qt::ElideMiddle, 240));
+        lastCapture->setToolTip(lastCapturePath_);
         lastCapture->setEnabled(false);
     }
 
     menu_->addSeparator();
 
     // 输出装饰（M1）：边框 / 阴影 / 圆角。参数走配置文件，菜单只做开关。
-    auto* decorationMenu = menu_->addMenu(QStringLiteral("输出装饰"));
+    auto* decorationMenu = menu_->addMenu(QStringLiteral("截图外观"));
+    decorationMenu->setToolTipsVisible(true);
     auto makeToggle = [this, decorationMenu](const QString& text, bool checked,
                                              auto apply) {
         QAction* action = decorationMenu->addAction(text);
@@ -500,18 +551,21 @@ void TrayController::rebuildMenu() {
             saveConfig();
             rebuildMenu();
         }, Qt::QueuedConnection);
+        return action;
     };
-    makeToggle(QStringLiteral("圆角（半径 %1）").arg(roundRadius_), roundEnabled_,
-               [this](bool on) { roundEnabled_ = on; });
-    makeToggle(QStringLiteral("边框（%1px）").arg(borderWidth_), borderEnabled_,
-               [this](bool on) { borderEnabled_ = on; });
+    makeToggle(QStringLiteral("圆角"), roundEnabled_,
+               [this](bool on) { roundEnabled_ = on; })
+        ->setToolTip(QStringLiteral("圆角半径 %1 像素").arg(roundRadius_));
+    makeToggle(QStringLiteral("边框"), borderEnabled_,
+               [this](bool on) { borderEnabled_ = on; })
+        ->setToolTip(QStringLiteral("边框宽度 %1 像素").arg(borderWidth_));
     makeToggle(QStringLiteral("阴影"), shadowEnabled_,
                [this](bool on) { shadowEnabled_ = on; });
 
     // 触发角（M1）：屏幕角落停留触发截图。
     QAction* triggerAction =
-        menu_->addAction(QStringLiteral("触发角（停留 %1ms 触发截图）")
-                             .arg(triggerDwellMs_));
+        menu_->addAction(QStringLiteral("角落截图"));
+    triggerAction->setToolTip(QStringLiteral("角落停留 %1 毫秒后截图").arg(triggerDwellMs_));
     triggerAction->setCheckable(true);
     triggerAction->setChecked(triggerEnabled_);
     connect(triggerAction, &QAction::triggered, this, [this](bool on) {
@@ -523,7 +577,8 @@ void TrayController::rebuildMenu() {
 
     // 衣架（M3，tendedero 合并）：指针停在屏幕顶边展开。
     QAction* clotheslineAction =
-        menu_->addAction(QStringLiteral("衣架（顶边停留展开）"));
+        menu_->addAction(QStringLiteral("图片暂存"));
+    clotheslineAction->setToolTip(QStringLiteral("鼠标停在屏幕顶部，查看暂存图片"));
     clotheslineAction->setCheckable(true);
     clotheslineAction->setChecked(clotheslineEnabled_);
     clotheslineAction->setEnabled(clothesline_ != nullptr ||
@@ -545,7 +600,8 @@ void TrayController::rebuildMenu() {
 
     // 剪贴板图像自动挂载（M3 增补，对齐 tendedero 的 "Hang copied images"）。
     QAction* clipWatch =
-        menu_->addAction(QStringLiteral("复制图像时自动挂上衣架"));
+        menu_->addAction(QStringLiteral("自动收集"));
+    clipWatch->setToolTip(QStringLiteral("自动暂存复制的图片"));
     clipWatch->setCheckable(true);
     clipWatch->setChecked(clipboardWatchEnabled_);
     connect(clipWatch, &QAction::triggered, this, [this](bool on) {
@@ -559,13 +615,13 @@ void TrayController::rebuildMenu() {
     auto* settingsAction = menu_->addAction(QStringLiteral("设置…"));
     connect(settingsAction, &QAction::triggered, this, &TrayController::showSettings, Qt::QueuedConnection);
 
-    auto* capabilityAction = menu_->addAction(QStringLiteral("平台能力…"));
+    auto* capabilityAction = menu_->addAction(QStringLiteral("功能检查…"));
     connect(capabilityAction, &QAction::triggered, this,
             &TrayController::showCapabilities, Qt::QueuedConnection);
 
     menu_->addSeparator();
 
-    auto* quitAction = menu_->addAction(QStringLiteral("退出 J2"));
+    auto* quitAction = menu_->addAction(QStringLiteral("退出应用"));
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit, Qt::QueuedConnection);
 }
 
@@ -888,31 +944,38 @@ QString TrayController::captureWithSelection(QString* error) {
         return QPixmap::fromImage(toQImage(fresh.image));
     };
 
-    // 窗口吸附候选（M1）：平台层的窗口矩形（虚拟桌面坐标）→ 本屏逻辑坐标。
-    // 注意 macOS 的窗口 bounds 与显示器 bounds 同在"逻辑点"空间；
-    // X11 两者同在像素空间 —— 换算只需减去屏幕原点，两种平台一致。
-    const QRect screenGeometryForSnap = screen->geometry();
-    std::vector<core::Rect> snapCandidates;
-    for (const auto& windowRect : platform_->windowRects()) {
-        const int x = windowRect.x - screenGeometryForSnap.x();
-        const int y = windowRect.y - screenGeometryForSnap.y();
-        const core::Rect local = core::Rect{x, y, windowRect.width, windowRect.height}
-                                     .intersected(core::Rect{0, 0,
-                                                             screenGeometryForSnap.width(),
-                                                             screenGeometryForSnap.height()});
-        if (!local.isEmpty()) {
-            snapCandidates.push_back(local);
+    // 每次冻结画面时同时记录窗口顺序与元素查询对象，排除随后出现的遮罩。
+    const QPointer<QScreen> snapScreen(screen);
+    auto snapTargets = [this, snapScreen]() {
+        SelectionSnapTargets targets;
+        if (!snapScreen) return targets;
+        const QRect geometry = snapScreen->geometry();
+        const core::Rect screenBounds{0, 0, geometry.width(), geometry.height()};
+        for (const auto& window : platform_->windowRects()) {
+            const auto local = core::Rect{window.x - geometry.x(), window.y - geometry.y(),
+                window.width, window.height}.intersected(screenBounds);
+            if (!local.isEmpty()) targets.windows.push_back(local);
         }
-    }
-    if (!snapCandidates.empty()) {
-        qInfo().noquote() << QStringLiteral("[jie2] 吸附候选窗口数：%1")
-                                 .arg(snapCandidates.size());
-    }
+        auto locator = platform_->createElementLocator();
+        targets.accessibilityRequired = locator.accessibilityRequired;
+        if (locator.rectanglesAt) {
+            targets.elementsAt = [query = std::move(locator.rectanglesAt), geometry, screenBounds](core::Point point) {
+                std::vector<core::Rect> local;
+                for (const auto& item : query({point.x + geometry.x(), point.y + geometry.y()})) {
+                    const auto clipped = core::Rect{item.x - geometry.x(), item.y - geometry.y(),
+                        item.width, item.height}.intersected(screenBounds);
+                    if (!clipped.isEmpty()) local.push_back(clipped);
+                }
+                return local;
+            };
+        }
+        return targets;
+    };
 
     SelectionOverlay::Options overlayOptions;
     overlayOptions.historyPaths = historyPaths;
     overlayOptions.recapture = recapture;
-    overlayOptions.snapCandidates = snapCandidates;
+    overlayOptions.snapTargets = std::move(snapTargets);
     overlayOptions.paletteSize = paletteSize_;
     overlayOptions.shortcuts = shortcutMap_;
     overlayOptions.darkTheme = darkTheme_;
@@ -1047,11 +1110,11 @@ void TrayController::triggerCapture() {
     // 计数、历史与配置更新统一在 saveAndCopy 里完成（所有保存路径的公共出口）。
     if (path == QStringLiteral("(pin)")) { rebuildMenu(); return; }
     if (path == QStringLiteral("(clipboard)")) {
-        note(QStringLiteral("已复制到剪贴板"), QStringLiteral("截图已复制"));
+        note(QStringLiteral("复制完成"), QStringLiteral("截图已复制"));
         rebuildMenu(); return;
     }
     qInfo().noquote() << QStringLiteral("[jie2] 截图已保存：%1").arg(path);
-    note(QStringLiteral("截图已保存"),
+    note(QStringLiteral("截图完成"),
          QStringLiteral("%1\n（也已复制到剪贴板）").arg(path));
     rebuildMenu();
 }
@@ -1115,7 +1178,7 @@ void TrayController::setupTriggerCorner() {
 void TrayController::cornerTick() {
     // 遮罩（或任何模态窗口）打开期间不触发 —— 否则用户在截图时会反复触发。
     if (captureInProgress_ || QApplication::activeModalWidget() != nullptr ||
-        QApplication::activePopupWidget() != nullptr) {
+        QApplication::activePopupWidget() != nullptr || systemMenuIsOpen()) {
         cornerEnteredAt_ = 0;
         return;
     }
@@ -1304,8 +1367,8 @@ QByteArray TrayController::imageDigest(const QImage& image) {
                                       Qt::SmoothTransformation)
                              .convertToFormat(QImage::Format_RGBA8888);
     return QCryptographicHash::hash(
-        QByteArrayView(reinterpret_cast<const char*>(small.constBits()),
-                       static_cast<qsizetype>(small.sizeInBytes())),
+        QByteArray::fromRawData(reinterpret_cast<const char*>(small.constBits()),
+                              static_cast<int>(small.sizeInBytes())),
         QCryptographicHash::Md5);
 }
 
@@ -1349,7 +1412,7 @@ QStringList TrayController::systemCaptureDirectories() {
         qgetenv("JIE2_SYSTEM_CAPTURE_DIRS"));
     if (!override.isEmpty()) {
         const QStringList parts =
-            override.split(QDir::listSeparator(), Qt::SkipEmptyParts);
+            override.split(QDir::listSeparator(), kSkipEmptyParts);
         for (const QString& part : parts) {
             if (QFileInfo(part).isDir()) {
                 dirs << part;
@@ -1519,7 +1582,7 @@ void TrayController::rescanSystemCaptures(bool initial) {
             recordCapture(path, image);
             qInfo().noquote()
                 << QStringLiteral("[jie2] 系统截图已挂上衣架：%1").arg(path);
-            note(QStringLiteral("已挂上衣架（系统截图）"),
+            note(QStringLiteral("截图暂存"),
                  info.fileName());
         }
     }
@@ -1573,7 +1636,7 @@ void TrayController::clipboardChanged() {
     recordCapture(path, image);
     qInfo().noquote() << QStringLiteral("[jie2] 剪贴板图像已挂上衣架：%1")
                              .arg(path);
-    note(QStringLiteral("已挂上衣架"), QFileInfo(path).fileName());
+    note(QStringLiteral("图片暂存"), QFileInfo(path).fileName());
 }
 
 QString TrayController::saveImageToDirectory(const QImage& image,
@@ -1672,8 +1735,8 @@ void TrayController::triggerSaveClipboardImage() {
         image = clipboard->image();
     }
     if (image.isNull()) {
-        note(QStringLiteral("剪贴板中没有图像"),
-             QStringLiteral("先复制一张图，再按 Ctrl+Alt+C"), /*warning=*/true);
+        note(QStringLiteral("没有图片"),
+             QStringLiteral("请先复制图片，再使用保存图片"), /*warning=*/true);
         return;
     }
     QString error;
@@ -1683,12 +1746,12 @@ void TrayController::triggerSaveClipboardImage() {
         return;
     }
     qInfo().noquote() << QStringLiteral("[jie2] 已保存剪贴板图像：%1").arg(path);
-    note(QStringLiteral("已保存剪贴板图像"), path);
+    note(QStringLiteral("保存完成"), path);
 }
 
 void TrayController::toggleHidePins() {
     if (pins_.empty()) {
-        note(QStringLiteral("没有贴图"), QStringLiteral("先用 Ctrl+Alt+P 贴一张出来"));
+        note(QStringLiteral("没有贴图"), QStringLiteral("请先用“贴到屏幕”添加贴图"));
         return;
     }
     pinsHidden_ = !pinsHidden_;
@@ -1773,7 +1836,7 @@ int TrayController::emptyCurrentPinGroup() {
                              .arg(currentPinGroup_ + 1)
                              .arg(closing.size());
     if (!closing.empty()) {
-        note(QStringLiteral("贴图组已清空"),
+    note(QStringLiteral("已清空"),
              QStringLiteral("第 %1 组关闭了 %2 张")
                  .arg(currentPinGroup_ + 1)
                  .arg(closing.size()));
@@ -1787,11 +1850,11 @@ void TrayController::showPinGroupManager() {
     // 管理对话框放栈上：exec() 期间主事件循环继续运行（嵌套事件循环），
     // 单实例通道与其它菜单动作不受影响。
     QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("J2 · 贴图分组管理"));
+    dialog.setWindowTitle(QStringLiteral("贴图分组"));
     auto* layout = new QVBoxLayout(&dialog);
 
     auto* hint = new QLabel(
-        QStringLiteral("每个分组是一组贴图；切换后只显示该组。"), &dialog);
+        QStringLiteral("切换分组后，只显示该组的贴图。"), &dialog);
     hint->setStyleSheet(QStringLiteral("color: #888;"));
     layout->addWidget(hint);
 
@@ -1813,7 +1876,7 @@ void TrayController::showPinGroupManager() {
             &dialog);
         row->addWidget(label, /*stretch=*/1);
 
-        auto* switchButton = new QPushButton(QStringLiteral("切换到该组"), &dialog);
+        auto* switchButton = new QPushButton(QStringLiteral("切换分组"), &dialog);
         switchButton->setEnabled(group != currentPinGroup_);
         connect(switchButton, &QPushButton::clicked, &dialog,
                 [this, &dialog, group]() {
@@ -1858,9 +1921,8 @@ void TrayController::showPinGroupManager() {
 
 void TrayController::activateExistingInstance() {
     qInfo().noquote() << QStringLiteral("[jie2] 唤起已有实例");
-    note(QStringLiteral("J2 已在运行"),
-         QStringLiteral("无需重复启动：Ctrl+Alt+T 截图，Ctrl+Alt+P 贴图，"
-                        "Ctrl+Alt+C 保存剪贴板图像"));
+    note(QStringLiteral("已经启动"),
+         QStringLiteral("点击菜单栏图标，即可截图或贴图"));
 }
 
 void TrayController::toggleSelectAllPins() {
@@ -1883,8 +1945,8 @@ void TrayController::toggleSelectAllPins() {
                              .arg(anyUnselected
                                       ? QStringLiteral("—— 拖动任一即整体移动")
                                       : QString());
-    note(anyUnselected ? QStringLiteral("已全选贴图")
-                       : QStringLiteral("已取消全选"),
+    note(anyUnselected ? QStringLiteral("全部选中")
+                       : QStringLiteral("取消全选"),
          QStringLiteral("%1 张").arg(pins_.size()));
 }
 
@@ -1956,7 +2018,7 @@ void TrayController::saveAllPins() {
     qInfo().noquote() << QStringLiteral("[jie2] 批量保存贴图：%1/%2 张")
                              .arg(saved)
                              .arg(pins_.size());
-    note(QStringLiteral("贴图已保存"),
+    note(QStringLiteral("保存完成"),
          QStringLiteral("已保存 %1 张到 %2").arg(saved).arg(directory));
 }
 
@@ -1986,7 +2048,7 @@ void TrayController::triggerBarcodeScan() {
     const QImage image = QApplication::clipboard()->image();
     if (image.isNull()) {
         note(QStringLiteral("无法识别"),
-             QStringLiteral("剪贴板里没有图像。先截一张带码的图（Ctrl+Alt+T）再试。"),
+             QStringLiteral("请先截取或复制一张带码的图片"),
              /*warning=*/true);
         return;
     }
@@ -1997,9 +2059,8 @@ void TrayController::triggerBarcodeScan() {
         return;
     }
     if (result.text.empty()) {
-        note(QStringLiteral("未发现二维码/条形码"),
-             QStringLiteral("图像里没有可识别的码（后端：%1）")
-                 .arg(QString::fromStdString(result.backend)));
+        note(QStringLiteral("未找到码"),
+             QStringLiteral("图片中未找到二维码或条形码"));
         return;
     }
     QApplication::clipboard()->setText(QString::fromStdString(result.text));
@@ -2007,7 +2068,7 @@ void TrayController::triggerBarcodeScan() {
                              .arg(QString::fromStdString(result.text)
                                       .count(QLatin1Char('\n')) +
                                   1);
-    note(QStringLiteral("扫码完成（已复制）"),
+    note(QStringLiteral("扫码完成"),
          QString::fromStdString(result.text).left(160));
 }
 
@@ -2015,27 +2076,29 @@ void TrayController::triggerOcr() {
     if (serviceInProgress_) return;
     QScopedValueRollback<bool> busy(serviceInProgress_, true);
     if (ocrConfig_.isCloud() && (ocrConfig_.endpoint.empty() || ocrConfig_.model.empty())) {
-        note("请先配置文字识别", "打开托盘菜单的“设置 → 文字识别”，填写服务地址、模型名称和密钥。", true);
+        note("连接服务", "请打开“设置 → 提取文字”连接服务", true);
         return;
     }
     // 来源：剪贴板图像（截图后内容即在此）。
     const QImage image = QApplication::clipboard()->image();
     if (image.isNull()) {
         note(QStringLiteral("无法识别"),
-             QStringLiteral("剪贴板里没有图像。先截一张图（Ctrl+Alt+T）再试。"),
+             QStringLiteral("请先截图或复制一张图片"),
              /*warning=*/true);
         return;
     }
 
     // 云端后端必须显式确认（评估报告 4.4 第二条原则：联网需显式同意）。
     if (ocrConfig_.isCloud()) {
-        const auto answer = QMessageBox::warning(
-            nullptr, QStringLiteral("文字识别将上传图像"),
-            QStringLiteral("当前 OCR 后端是云端接口：\n%1\n\n识别时会把这张图像"
-                           "上传到该服务。是否继续？")
+        QMessageBox confirmation(QMessageBox::Question, QStringLiteral("发送图片"),
+            QStringLiteral("将图片发送到以下服务以提取文字：\n%1")
                 .arg(QString::fromStdString(ocrConfig_.endpoint)),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes) {
+            QMessageBox::Yes | QMessageBox::No);
+        confirmation.setTextFormat(Qt::PlainText);
+        confirmation.button(QMessageBox::Yes)->setText(QStringLiteral("发送图片"));
+        confirmation.button(QMessageBox::No)->setText(QStringLiteral("取消"));
+        confirmation.setDefaultButton(QMessageBox::No);
+        if (confirmation.exec() != QMessageBox::Yes) {
             qInfo().noquote() << QStringLiteral("[jie2] 云端 OCR 被用户取消");
             return;
         }
@@ -2043,22 +2106,20 @@ void TrayController::triggerOcr() {
 
     const core::OcrResult result = runOcrOnImage(image);
     if (!result.ok) {
-        note(QStringLiteral("文字识别失败"),
+        note(QStringLiteral("识别失败"),
              QString::fromStdString(result.error), /*warning=*/true);
         return;
     }
     if (result.text.empty()) {
-        note(QStringLiteral("文字识别完成"),
-             QStringLiteral("没有识别到文字（后端：%1）")
-                 .arg(QString::fromStdString(result.backend)));
+        note(QStringLiteral("识别完成"),
+             QStringLiteral("这张图片中未识别到文字"));
         return;
     }
 
     QApplication::clipboard()->setText(QString::fromStdString(result.text));
     const QString preview = QString::fromStdString(result.text).left(120);
-    note(QStringLiteral("文字识别完成（已复制）"),
-         QStringLiteral("%1\n\n后端：%2")
-             .arg(preview, QString::fromStdString(result.backend)));
+    note(QStringLiteral("复制完成"),
+         preview);
 }
 
 void TrayController::note(const QString& title, const QString& body, bool warning) {
@@ -2066,6 +2127,8 @@ void TrayController::note(const QString& title, const QString& body, bool warnin
         // 常驻应用的系统通知可能被权限或专注模式隐藏，错误必须可见。
         auto* box = new QMessageBox(QMessageBox::Warning, title, body,
                                     QMessageBox::Ok);
+        box->setTextFormat(Qt::PlainText);
+        box->button(QMessageBox::Ok)->setText(QStringLiteral("知道了"));
         box->setAttribute(Qt::WA_DeleteOnClose);
         box->setWindowModality(Qt::ApplicationModal);
         box->show();
@@ -2087,18 +2150,28 @@ void TrayController::showCapabilities() {
     auto status = [](core::CapabilityStatus value) -> QString {
         switch (value) {
         case core::CapabilityStatus::Available: return QStringLiteral("可用");
-        case core::CapabilityStatus::Degraded: return QStringLiteral("受限，查看详细信息");
-        case core::CapabilityStatus::Unavailable: return QStringLiteral("不可用，查看详细信息");
-        case core::CapabilityStatus::NotApplicable: return QStringLiteral("当前系统无需此项");
+        case core::CapabilityStatus::Degraded: return QStringLiteral("部分可用");
+        case core::CapabilityStatus::Unavailable: return QStringLiteral("暂不可用");
+        case core::CapabilityStatus::NotApplicable: return QStringLiteral("无需检查");
         default: return QStringLiteral("尚未确认");
         }
     };
-    const QString text = QStringLiteral("这是功能检查结果。标为“可用”的功能可以使用。\n\n屏幕截图：%1\n全局快捷键：%2\n贴图置顶：%3\n顶部条专用协议：%4\n图片剪贴板：%5\n\n系统：%6（%7）")
+    QString text = QStringLiteral("查看当前能使用的功能。\n\n屏幕截图：%1\n快捷按键：%2\n贴图置顶：%3\n复制图片：%4")
         .arg(status(capabilities_.screenCapture.status), status(capabilities_.globalHotkey.status),
-             status(capabilities_.alwaysOnTop.status), status(capabilities_.layerShell.status),
-             status(capabilities_.clipboardImage.status), QString::fromStdString(platform_->name()),
-             QString::fromStdString(capabilities_.sessionDetail));
-    auto* box = new QMessageBox(QMessageBox::Information, QStringLiteral("J2 平台能力"), text, QMessageBox::Ok);
+             status(capabilities_.alwaysOnTop.status), status(capabilities_.clipboardImage.status));
+    if (capabilities_.session == core::SessionType::Wayland)
+        text += QStringLiteral("\n图片暂存：%1").arg(status(capabilities_.layerShell.status));
+    const auto elementAccess = platform_->createElementLocator();
+    if (elementAccess.accessibilityRequired || elementAccess.rectanglesAt)
+        text += elementAccess.accessibilityRequired ? QStringLiteral("\n按钮识别：需允许辅助功能")
+                                                    : QStringLiteral("\n按钮识别：可用");
+    text += QStringLiteral("\n\n系统：%1").arg(QString::fromStdString(platform_->name()));
+    auto* box = new QMessageBox(QMessageBox::Information, QStringLiteral("功能检查"), text, QMessageBox::Ok);
+    box->button(QMessageBox::Ok)->setText(QStringLiteral("完成"));
+    if (elementAccess.accessibilityRequired) {
+        auto* allow = box->addButton(QStringLiteral("允许识别"), QMessageBox::ActionRole);
+        connect(allow, &QPushButton::clicked, this, [this] { platform_->requestElementAccess(); });
+    }
     box->setTextFormat(Qt::PlainText);
     box->setDetailedText(QString::fromStdString(capabilities_.describe()));
     box->setAttribute(Qt::WA_DeleteOnClose);
@@ -2119,7 +2192,7 @@ void TrayController::showSettings() {
         if (dialog.exec() != QDialog::Accepted) return;
         QString error;
         if (SettingsDialog::writeConfig(configPath_, dialog.configuration(), &error)) break;
-        QMessageBox::warning(&dialog, "设置未保存", "无法保存设置：" + error);
+        QMessageBox::warning(&dialog, "保存失败", "无法保存设置：" + error);
     }
     loadConfig();
     setupTriggerCorner();
@@ -2158,24 +2231,31 @@ void TrayController::triggerTranslation() {
     service.apiKey = config.get("translation.api_key");
     service.timeoutMs = std::clamp(config.getInt("translation.timeout_ms", 60000), 1000, 300000);
     if (service.endpoint.empty() || service.model.empty()) {
-        note("请先配置翻译", "打开托盘菜单的“设置 → 翻译”，填写服务地址、模型名称和密钥。", true); return;
+        note("连接服务", "请打开“设置 → 翻译内容”连接服务", true); return;
     }
     auto* clipboard = QApplication::clipboard();
     const QImage image = clipboard->image();
     const QString text = image.isNull() ? clipboard->text() : QString();
     if (image.isNull() && text.trimmed().isEmpty()) {
-        note("无法翻译", "剪贴板里没有文字或图片。请先复制文字或截图。", true); return;
+        note("无法翻译", "请先复制文字或图片", true); return;
     }
-    if (QMessageBox::question(nullptr, "翻译将发送内容",
-            QStringLiteral("将剪贴板中的%1发送到以下服务进行翻译：\n%2\n\n是否继续？")
-                .arg(image.isNull() ? "文字" : "图片", QString::fromStdString(service.endpoint)),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    QMessageBox confirmation(QMessageBox::Question, QStringLiteral("发送内容"),
+        QStringLiteral("将已复制的%1发送到以下服务翻译：\n%2")
+            .arg(image.isNull() ? "文字" : "图片", QString::fromStdString(service.endpoint)),
+        QMessageBox::Yes | QMessageBox::No);
+    confirmation.setTextFormat(Qt::PlainText);
+    confirmation.button(QMessageBox::Yes)->setText(QStringLiteral("发送内容"));
+    confirmation.button(QMessageBox::No)->setText(QStringLiteral("取消"));
+    confirmation.setDefaultButton(QMessageBox::No);
+    if (confirmation.exec() != QMessageBox::Yes) return;
     const auto result = OcrRunner::translate(service, image, text,
         QString::fromStdString(config.get("translation.target_language", "简体中文")));
     if (!result.ok) { note("翻译失败", QString::fromStdString(result.error), true); return; }
     clipboard->setText(QString::fromStdString(result.text));
-    auto* box = new QMessageBox(QMessageBox::Information, "翻译完成（已复制）",
+    auto* box = new QMessageBox(QMessageBox::Information, "翻译完成",
         QString::fromStdString(result.text), QMessageBox::Ok);
+    box->setInformativeText(QStringLiteral("译文已自动复制"));
+    box->button(QMessageBox::Ok)->setText(QStringLiteral("完成"));
     box->setTextFormat(Qt::PlainText);
     box->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     box->setAttribute(Qt::WA_DeleteOnClose); box->show(); box->raise(); box->activateWindow();
@@ -2213,16 +2293,16 @@ void TrayController::registerHotkey() {
                 hotkeyError_.clear();
                 qInfo().noquote() << QStringLiteral("[jie2] 原截图热键被占用，已自动启用备用热键 F1");
                 if (tray_ != nullptr && tray_->isSystemTrayAvailable()) {
-                    tray_->showMessage(QStringLiteral("J2 截图热键已调整"),
-                                       QStringLiteral("原设热键被系统占用，已自动启用 F1 作为截图热键"),
+                    tray_->showMessage(QStringLiteral("按键已更换"),
+                                       QStringLiteral("原按键被占用，已改用 F1 截图"),
                                        QSystemTrayIcon::Information, 5000);
                 }
             }
         }
 #endif
         if (!hotkeyRegistered_ && tray_ != nullptr && tray_->isSystemTrayAvailable()) {
-            tray_->showMessage(QStringLiteral("J2 截图热键注册失败"),
-                               QStringLiteral("快捷键被其他程序占用（%1），请在设置中更改").arg(hotkeyError_),
+            tray_->showMessage(QStringLiteral("按键不可用"),
+                               QStringLiteral("快捷键被占用，请在设置中更换"),
                                QSystemTrayIcon::Warning, 5000);
         }
     }
@@ -2368,7 +2448,7 @@ void TrayController::loadConfig() {
     borderWidth_ = config.getInt("output.border.width", 1);
     const QString borderColor =
         QString::fromStdString(config.get("output.border.color", "#d2d2d2"));
-    if (QColor::isValidColorName(borderColor)) {
+    if (QColor(borderColor).isValid()) {
         borderColor_ = QColor(borderColor);
     }
     shadowEnabled_ = config.getBool("output.shadow.enabled", false);

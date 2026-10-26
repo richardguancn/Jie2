@@ -30,7 +30,12 @@ struct ShortcutSpec {
     unsigned modifiers = 0;    // ShortcutModifier 位组合
 
     bool enabled() const { return key != 0; }
-    friend bool operator==(const ShortcutSpec&, const ShortcutSpec&) = default;
+    friend bool operator==(const ShortcutSpec& a, const ShortcutSpec& b) {
+        return a.key == b.key && a.modifiers == b.modifiers;
+    }
+    friend bool operator!=(const ShortcutSpec& a, const ShortcutSpec& b) {
+        return !(a == b);
+    }
 };
 
 /// 解析 "x" / "shift+b" / "ctrl+alt+p" / "none" / ""。

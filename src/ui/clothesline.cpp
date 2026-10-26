@@ -1,3 +1,5 @@
+#include "ui/qt_compat.h"
+#include "ui/system_menu.h"
 #include "ui/clothesline.h"
 
 #include <algorithm>
@@ -75,7 +77,7 @@ const QImage& cardShadow(const QSize& size, bool hovered) {
 } // namespace
 
 Clothesline::Clothesline(QWidget* parent) : QWidget(parent) {
-    setWindowTitle(QStringLiteral("J2 衣架"));
+    setWindowTitle(QStringLiteral("图片暂存"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint | Qt::Tool |
                    Qt::NoDropShadowWindowHint);
@@ -154,7 +156,7 @@ void Clothesline::setEntries(std::vector<core::HistoryEntry> entries) {
         // 首次见到的路径 = 新挂上的。首次调用（启动载入历史）不算"新"，
         // 否则一启动整排旧截图都会播放掉落并触发探出。
         const bool isNew = primed_ &&
-                           !knownPaths_.contains(item.entry.path);
+                           knownPaths_.find(item.entry.path) == knownPaths_.end();
         if (isNew) {
             hasNew = true;
             if (revealed_) {
@@ -893,7 +895,9 @@ void Clothesline::drawCardBody(QPainter& painter, int index) const {
         painter.drawRoundedRect(bubble, 13.5, 13.5);
         painter.setPen(QPen(QColor(39, 31, 49), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         const QPointF check(bubble.left() + 13, bubble.center().y());
-        painter.drawPolyline(QPolygonF{check + QPointF(-3, 0), check + QPointF(0, 3), check + QPointF(6, -4)});
+        QPolygonF checkmark;
+        checkmark << check + QPointF(-3, 0) << check + QPointF(0, 3) << check + QPointF(6, -4);
+        painter.drawPolyline(checkmark);
         painter.drawText(bubble.adjusted(29, 0, -10, 0), Qt::AlignCenter, text);
         painter.restore();
     }
@@ -903,7 +907,7 @@ void Clothesline::drawCardBody(QPainter& painter, int index) const {
 void Clothesline::drawEmptyHint(QPainter& painter) const {
     // 空态提示：绳子中点下方的胶囊气泡（tendedero 的 Hint）。
     const QString text =
-        QStringLiteral("截一张图，它会立刻挂在这里");
+        QStringLiteral("截图后，图片会暂存在这里");
     painter.setFont(QFont(QString(), 12));
     const QRectF textBounds = painter.fontMetrics().boundingRect(text);
     const QRectF capsule(0, 0, textBounds.width() + 24, textBounds.height() + 12);
@@ -1009,21 +1013,25 @@ QMenu* Clothesline::createContextMenu(const QString& path) {
     auto add = [menu](const QString& label, auto callback) {
         auto* action = menu->addAction(label);
         QObject::connect(action, &QAction::triggered, menu, callback);
+        return action;
     };
     add(QStringLiteral("复制"), [this, path] { emit copyRequested(path); });
     add(QStringLiteral("打开"), [this, path] { emit openRequested(path); });
     add(QStringLiteral("标注"), [this, path] { emit annotateRequested(path); });
 #ifdef Q_OS_MACOS
-    add(QStringLiteral("在访达中显示"), [this, path] { emit revealRequested(path); });
+    add(QStringLiteral("显示文件"), [this, path] { emit revealRequested(path); });
 #else
-    add(QStringLiteral("在文件管理器中显示"), [this, path] { emit revealRequested(path); });
+    add(QStringLiteral("显示文件"), [this, path] { emit revealRequested(path); });
 #endif
-    add(QStringLiteral("保存到桌面"), [this, path] { emit saveDesktopRequested(path); });
+    add(QStringLiteral("存到桌面"), [this, path] { emit saveDesktopRequested(path); });
     menu->addSeparator();
     const bool owned = !managedDirectory_.isEmpty() &&
         QFileInfo(path).canonicalPath() == QFileInfo(managedDirectory_).canonicalFilePath();
-    add(owned ? QStringLiteral("丢弃") : QStringLiteral("从衣架取下（保留文件）"),
+    auto* discard = add(owned ? QStringLiteral("删除图片") : QStringLiteral("移出暂存"),
         [this, path] { emit discardRequested(path); });
+    discard->setToolTip(owned ? QStringLiteral("移到废纸篓，可从废纸篓恢复")
+                              : QStringLiteral("仅从暂存移除，保留原文件"));
+    menu->setToolTipsVisible(true);
     return menu;
 }
 
@@ -1037,9 +1045,7 @@ void Clothesline::mousePressEvent(QMouseEvent* event) {
             const QString path = QString::fromStdString(entries_[index].entry.path);
             auto* menu = createContextMenu(path);
             menuOpen_ = true;
-            // 让 Qt 管理菜单的显示、选择与动作分发。只弹出 toNSMenu()
-            // 得到的原生对象会绕过 QMenu 的生命周期，导致选择未送达 QAction。
-            menu->exec(event->globalPosition().toPoint());
+            execContextMenu(menu, mouseGlobalPosition(event));
             menuOpen_ = false;
             menu->deleteLater();
         } else {
@@ -1143,7 +1149,7 @@ void Clothesline::mouseMoveEvent(QMouseEvent* event) {
     if (index != hoverIndex_) {
         hoverIndex_ = index;
         setCursor(index >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
-        setToolTip(index >= 0 ? QStringLiteral("单击复制 · 双击打开 · 长按标注 · 拖动分享 · 右键更多") : QString());
+        setToolTip(index >= 0 ? QStringLiteral("单击复制，双击打开，长按标注，拖出分享") : QString());
         update();
     }
 }
